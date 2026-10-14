@@ -184,7 +184,7 @@ const RequestApproval = () => {
           ? `Approved registration of ${targetName}`
           : `Declined registration of ${targetName}`,
         { targetId: user.id, targetName },
-      );
+      )?.catch?.(() => {});
       toastSuccess(
         action === "approve" ? "Registration approved" : "Registration declined",
         action === "approve"

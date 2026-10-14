@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -99,6 +99,13 @@ const RegisterBuyer = () => {
   const [failedSubmits, setFailedSubmits] = useState(0);
   const [submitLockedUntil, setSubmitLockedUntil] = useState(0);
 
+  // Ref-based in-flight guard: ang `loading` state ay async, kaya ang
+  // mabilisang double-tap ay nakakalusot sa `if (loading) return` at
+  // nagiging 2x createUser + 2x sendEmailVerification = instant
+  // auth/too-many-requests. Ang ref ay synchronous, kaya tunay na
+  // isang request lang at a time. Walang UI na binabago.
+  const submitBusyRef = useRef(false);
+
   useEffect(() => {
     if (cooldown <= 0) return;
     const t = setTimeout(() => setCooldown((c) => c - 1), 1000);
@@ -126,7 +133,7 @@ const RegisterBuyer = () => {
   };
 
   const handleResendVerification = async () => {
-    if (loading) return;
+    if (loading || submitBusyRef.current) return;
     if (cooldown > 0) {
       showToast(`Wait ${cooldown}s before requesting a new link. Use the latest email we sent.`);
       return;
@@ -136,6 +143,7 @@ const RegisterBuyer = () => {
     // walang password, sa backend.
     if (!user || user.email?.toLowerCase() !== email.trim().toLowerCase()) {
       try {
+        submitBusyRef.current = true;
         setLoading(true);
         const result = await resendVerificationByEmail(email.trim());
         if (result.alreadyVerified) {
@@ -150,11 +158,13 @@ const RegisterBuyer = () => {
           showToast("Could not resend. Check your connection and try again.");
         }
       } finally {
+        submitBusyRef.current = false;
         setLoading(false);
       }
       return;
     }
     try {
+      submitBusyRef.current = true;
       setLoading(true);
       const result = await sendBrandedVerificationEmail(fullName.trim());
       if (result.alreadyVerified) {
@@ -166,6 +176,7 @@ const RegisterBuyer = () => {
     } catch (error: any) {
       showToast(getRegisterErrorMessage(error?.code));
     } finally {
+      submitBusyRef.current = false;
       setLoading(false);
     }
   };
@@ -236,11 +247,13 @@ const RegisterBuyer = () => {
   };
 
   const checkEmailVerification = async () => {
+    if (checkingEmail || submitBusyRef.current) return;
     const user = auth.currentUser;
     // Walang session (nag-close ng app) = i-check sa backend gamit
     // lang ang email. Kapag verified na, mag-sign in para tapusin.
     if (!user || user.email?.toLowerCase() !== email.trim().toLowerCase()) {
       try {
+        submitBusyRef.current = true;
         setCheckingEmail(true);
         const status = await checkEmailStatus(email.trim());
         if (!status?.exists) {
@@ -255,17 +268,20 @@ const RegisterBuyer = () => {
         showToast("Email verified! Please sign in to finish your registration.");
         router.replace("/auth/login");
       } finally {
+        submitBusyRef.current = false;
         setCheckingEmail(false);
       }
       return;
     }
 
     try {
+      submitBusyRef.current = true;
       setCheckingEmail(true);
       await reload(user);
       if (!user.emailVerified) {
         showToast("Verify your email using the link we sent, then try again.");
         setCheckingEmail(false);
+        submitBusyRef.current = false;
         return;
       }
     } catch (error: any) {
@@ -281,11 +297,13 @@ const RegisterBuyer = () => {
         } catch {}
         showToast("Session expired. Please submit registration again.");
         setCheckingEmail(false);
+        submitBusyRef.current = false;
         setStep(1);
         return;
       }
       showToast("Could not check email verification. Please try again.");
       setCheckingEmail(false);
+      submitBusyRef.current = false;
       return;
     }
 
@@ -295,6 +313,7 @@ const RegisterBuyer = () => {
     } catch (error: any) {
       if (error?.code === "local/validation") {
         setCheckingEmail(false);
+        submitBusyRef.current = false;
         return;
       }
       console.error("Finalize registration failed:", error);
@@ -302,6 +321,7 @@ const RegisterBuyer = () => {
       // Bumalik sa ID step para makapili muli ng ID kung kailangan.
       setStep(3);
     } finally {
+      submitBusyRef.current = false;
       setCheckingEmail(false);
     }
   };
@@ -324,7 +344,9 @@ const RegisterBuyer = () => {
     // Double-tap guard: kapag "ang tagal" at pinindot ulit, bawat pindot
     // ay bagong createUser + sendEmailVerification = instant
     // auth/too-many-requests. Isang request lang at a time.
-    if (loading || checkingEmail) return;
+    // NOTE: ref ang tunay na guard (synchronous). Ang `loading` state ay
+    // async kaya nakakalusot ang mabilisang double-tap.
+    if (loading || checkingEmail || submitBusyRef.current) return;
     const validationError = validateDetails({ fullName, email, phone }) ||
       validatePasswords({ password, confirmPassword });
 
@@ -359,6 +381,7 @@ const RegisterBuyer = () => {
     // - May doc approved = "Email already registered".
     let emailCheck: Awaited<ReturnType<typeof checkEmailStatus>> = null;
     try {
+      submitBusyRef.current = true;
       setLoading(true);
 
       // ---- EMAIL-BASED DUPLICATE CHECK (walang password) ----
@@ -370,6 +393,7 @@ const RegisterBuyer = () => {
       if (emailCheck?.exists) {
         const checked = String(emailCheck.status || "").trim().toLowerCase();
         if (checked === "approved") {
+          submitBusyRef.current = false;
           setLoading(false);
           setFailedSubmits(0);
           setDialog({
@@ -380,6 +404,7 @@ const RegisterBuyer = () => {
           return;
         }
         if (checked === "pending") {
+          submitBusyRef.current = false;
           setLoading(false);
           setFailedSubmits(0);
           setDialog({
@@ -390,6 +415,7 @@ const RegisterBuyer = () => {
           return;
         }
         if (checked === "banned") {
+          submitBusyRef.current = false;
           setLoading(false);
           setFailedSubmits(0);
           setDialog({
@@ -464,6 +490,7 @@ const RegisterBuyer = () => {
           if (existingStatus !== "rejected") {
             const existingDialog = dialogForExistingStatus(existingStatus);
             if (existingDialog) {
+              submitBusyRef.current = false;
               setLoading(false);
               setFailedSubmits(0);
               setDialog(existingDialog);
@@ -471,6 +498,7 @@ const RegisterBuyer = () => {
             }
           }
         }
+        submitBusyRef.current = false;
         setLoading(false);
         setCooldown(60);
         setFailedSubmits(0);
@@ -481,6 +509,7 @@ const RegisterBuyer = () => {
 
       // ---- SEND VERIFICATION (save sa database mamaya pag verified) ----
       await sendBrandedVerificationEmail(fullName.trim());
+      submitBusyRef.current = false;
       setLoading(false);
       setCooldown(60);
       setFailedSubmits(0);
@@ -488,6 +517,7 @@ const RegisterBuyer = () => {
       showToast(`Verification link sent to ${email.trim()}. Verify first — nothing is saved until your email is verified.`);
 
     } catch (error: any) {
+      submitBusyRef.current = false;
       setLoading(false);
       console.log("Registration error:", error);
       const code = error?.code;

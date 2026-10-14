@@ -43,7 +43,6 @@ import {
 
 import {
   deliveryErrorMessage,
-  formatKm,
 } from "@/utils/deliveryFee";
 
 import {
@@ -1127,8 +1126,7 @@ export default function Checkout() {
                     return (
                       <View className="mb-3 flex-row items-center justify-between rounded-[5px] bg-green-50 p-2.5">
                         <Text className="text-xs text-gray-600">
-                          Delivery · {formatKm(q.distanceKm)}
-                          {q.tier ? ` (${q.tier})` : ""}
+                          Delivery
                         </Text>
                         <Text className="text-sm font-bold text-gray-800">
                           ₱{Number(q.deliveryFee || 0).toFixed(2)}
@@ -1506,10 +1504,7 @@ export default function Checkout() {
               {delivery === "delivery" &&
               activeFarms.map((farm: any) => {
                 const q: any = quotes[String(farm?.farmerId || "")];
-                const label =
-                  q?.status === "ok"
-                    ? `Delivery · ${farm?.farmName} (${formatKm(q.distanceKm)})`
-                    : `Delivery · ${farm?.farmName}`;
+                const label = `Delivery · ${farm?.farmName}`;
                 const value =
                   q?.status === "ok"
                     ? `₱${Number(q.deliveryFee || 0).toFixed(2)}`

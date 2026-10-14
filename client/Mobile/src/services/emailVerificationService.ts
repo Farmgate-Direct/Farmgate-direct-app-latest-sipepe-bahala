@@ -108,27 +108,24 @@ export const sendBrandedVerificationEmail = async (
     throw error;
   }
 
-  // Refresh muna — baka na-verify na sa ibang device/tab.
-  try {
-    await reload(user);
-  } catch {
-    // Kung bumagsak ang reload (ex. offline), ituloy pa rin ang send.
-  }
-
+  // NOTE: walang pre-send reload dito — extra Auth API call lang yon
+  // na ambag sa auth/too-many-requests. Ang freshness check ay nasa
+  // caller (handleSubmit/checkEmailVerification).
   if (user.emailVerified) {
     return { alreadyVerified: true };
   }
 
-  // Una: branded email via backend. Kapag hindi available
-  // (walang backend/SMTP), default Firebase email ang fallback.
-  // NOTE: walang post-send reload dito — extra Auth API call lang yon
-  // na nagpapabagal ng submit at ambag sa too-many-requests. Ang
-  // emailVerified ay magbabago lang pag klinick ang link, hindi
-  // kaagad pagkatapos mag-send.
-  if (await sendViaBackend(fullName)) {
-    return { alreadyVerified: false };
-  }
-
+  // DATING GINAGAMIT: diretsong Firebase verification email, walang
+  // backend/SMTP na kailangan para makapag-send. Ang branded backend
+  // (sendViaBackend) ay optional lang — kapag down o walang SMTP,
+  // 15s delay lang yon bago mag-fallback, kaya dine-diretso na sa
+  // Firebase para mabilis makapag-proceed. Ang Firebase template
+  // (may FarmGate design) ay nasa Firebase Console > Authentication >
+  // Templates, hindi tinatanggal. Walang UI na binabago — same return
+  // shape, same Verify button flow ("I've verified my email").
+  // NOTE: walang post-send reload dito — extra Auth API call lang yon.
+  // Ang emailVerified ay magbabago lang pag klinick ang link sa Gmail,
+  // saka iche-check ng "I've verified my email" button.
   await sendEmailVerification(user);
 
   return { alreadyVerified: false };

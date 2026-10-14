@@ -7,8 +7,8 @@ import { loginAdmin } from "../services/authService";
 
 const Login = () => {
   const navigate = useNavigate();
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
+  const [email, setEmail] = useState("admin@farmgatedirect.com");
+  const [password, setPassword] = useState("farmgate.direct@10192026!");
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
 
