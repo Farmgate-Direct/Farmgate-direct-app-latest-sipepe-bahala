@@ -198,20 +198,25 @@ export default function FarmerNotifications() {
         } as UiNotif);
       });
 
-    // Delivered / cancelled updates as system notices (latest few).
+    // Delivered / claimed / cancelled updates as system notices (latest few).
     orders
-      .filter((o) => ["delivered", "cancelled"].includes(o.status))
+      .filter((o) => ["delivered", "claimed", "cancelled"].includes(o.status))
       .slice(0, 5)
       .forEach((o) => {
         items.push({
           id: `derived-status-${o.id}`,
           farmerId,
           kind: "system",
-          title: o.status === "delivered" ? "Order completed" : "Order update",
+          title:
+            o.status === "delivered" || o.status === "claimed"
+              ? "Order completed"
+              : "Order update",
           body:
             o.status === "delivered"
               ? `Order ${o.orderNumber || `#${String(o.id || "").slice(0, 6)}`} was delivered.`
-              : `Order ${o.orderNumber || `#${String(o.id || "").slice(0, 6)}`} was cancelled.`,
+              : o.status === "claimed"
+                ? `Order ${o.orderNumber || `#${String(o.id || "").slice(0, 6)}`} was claimed.`
+                : `Order ${o.orderNumber || `#${String(o.id || "").slice(0, 6)}`} was cancelled.`,
           orderId: o.id,
           read: false,
           createdAt: (o as any).deliveredAt || (o as any).cancelledAt || o.updatedAt || o.createdAt,

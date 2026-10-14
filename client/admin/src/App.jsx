@@ -5,6 +5,7 @@ import Users from "./pages/users";
 import Approvals from "./pages/approvals";
 import Reports from "./pages/reports";
 import Orders from "./pages/orders";
+import Wallet from "./pages/wallet";
 import Profile from "./pages/profile";
 import ProtectedRoute from "./components/protectedRoute";
 import AdminLayout from "./components/adminLayout";
@@ -21,6 +22,7 @@ function App() {
           <Route path="/users" element={<Users />} />
           <Route path="/orders" element={<Orders />} />
           <Route path="/reports" element={<Reports />} />
+          <Route path="/wallet" element={<Wallet />} />
           <Route path="/profile" element={<Profile />} />
         </Route>
       </Route>

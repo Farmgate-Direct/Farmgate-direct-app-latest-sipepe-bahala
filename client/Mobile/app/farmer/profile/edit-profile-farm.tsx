@@ -42,6 +42,14 @@ import { uploadFarmImageAsync } from "../../../src/services/cloudinaryFarmServic
 
 import { deleteCloudinaryImage } from "../../../src/services/deleteImageService";
 
+import { Dropdown } from "react-native-element-dropdown";
+
+import {
+  BULACAN_PROVINCE,
+  BULACAN_CITIES,
+  barangaysForCity,
+} from "../../../constants/bulacanBarangays";
+
 const EditProfileFarm = () => {
   const Alert = useFarmerAlert();
   const { showToast } = useToast();
@@ -152,6 +160,16 @@ const EditProfileFarm = () => {
 
   const handleSave = async () => {
     try {
+      const city = String(user.municipality || (user as any).city || "").trim();
+      const barangay = String(user.barangay || "").trim();
+      if (!city) {
+        Alert.alert("Missing city", "Pick your City / Municipality from the list.");
+        return;
+      }
+      if (!barangay) {
+        Alert.alert("Missing barangay", "Pick your Barangay from the list. Delivery stays blocked until you do.");
+        return;
+      }
       setLoading(true);
 
       let coverPhoto =
@@ -202,14 +220,13 @@ const EditProfileFarm = () => {
         street:
           user.street || "",
 
-        barangay:
-          user.barangay || "",
+        barangay,
 
-        municipality:
-          user.municipality || "",
+        municipality: city,
+        city,
 
-        province:
-          user.province || "",
+        // Province is locked to Bulacan (Bulacan-only delivery).
+        province: BULACAN_PROVINCE,
 
         about:
           user.about || "",
@@ -223,6 +240,10 @@ const EditProfileFarm = () => {
 
       const updatedUser = {
         ...user,
+        municipality: city,
+        city,
+        barangay,
+        province: BULACAN_PROVINCE,
         coverPhoto,
         coverPhotoPublicId,
       };
@@ -399,9 +420,22 @@ const EditProfileFarm = () => {
             />
 
             <Text className="ml-2 text-sm font-semibold text-gray-700">
-              Location
+              Location (Bulacan only)
             </Text>
           </View>
+
+          {/* MISSING BARANGAY BANNER (legacy farms) */}
+          {!user.barangay?.trim() && (
+            <View className="mb-4 rounded-[10px] border border-amber-300 bg-amber-50 p-3">
+              <Text className="text-sm font-bold text-amber-900">
+                Delivery is blocked until you pick your barangay.
+              </Text>
+              <Text className="mt-1 text-xs text-amber-800">
+                Pick your City then Barangay below and save. Old free-text
+                addresses no longer work for delivery.
+              </Text>
+            </View>
+          )}
 
           {/* STREET */}
           <FieldLabel label="Street Name" />
@@ -419,53 +453,81 @@ const EditProfileFarm = () => {
             className="mb-4 rounded-[10px] border border-gray-200 bg-white px-4 py-3 text-base text-gray-900"
           />
 
-          {/* BARANGAY */}
+          {/* CITY / MUNICIPALITY (dropdown) */}
+          <FieldLabel label="City / Municipality" />
+
+          <Dropdown
+            style={{
+              backgroundColor: "#ffffff",
+              borderColor: "#e5e7eb",
+              borderWidth: 1,
+              borderRadius: 10,
+              paddingHorizontal: 16,
+              height: 50,
+              marginBottom: 16,
+            }}
+            data={BULACAN_CITIES.map((name) => ({ name, code: name }))}
+            labelField="name"
+            valueField="code"
+            placeholder="Select City / Municipality"
+            search
+            searchPlaceholder="Search city or municipality..."
+            value={user.municipality || (user as any).city || null}
+            activeColor="#f0fdf4"
+            onChange={(item) =>
+              setUser((prev) => ({
+                ...prev,
+                municipality: item.name,
+                city: item.name,
+                // Reset barangay when the city changes (barangays depend on city).
+                barangay: "",
+              }))
+            }
+          />
+
+          {/* BARANGAY (dropdown, depends on city) */}
           <FieldLabel label="Barangay" />
 
-          <TextInput
-            value={user.barangay}
-            onChangeText={(text) =>
+          <Dropdown
+            disable={!(user.municipality || (user as any).city)}
+            style={{
+              backgroundColor: "#ffffff",
+              borderColor: "#e5e7eb",
+              borderWidth: 1,
+              borderRadius: 10,
+              paddingHorizontal: 16,
+              height: 50,
+              marginBottom: 16,
+              opacity: user.municipality || (user as any).city ? 1 : 0.5,
+            }}
+            data={barangaysForCity(
+              user.municipality || (user as any).city || ""
+            ).map((name) => ({ name, code: name }))}
+            labelField="name"
+            valueField="code"
+            placeholder={
+              user.municipality || (user as any).city
+                ? "Select Barangay"
+                : "Select a city first"
+            }
+            search
+            searchPlaceholder="Search barangay..."
+            value={user.barangay || null}
+            activeColor="#f0fdf4"
+            onChange={(item) =>
               setUser((prev) => ({
                 ...prev,
-                barangay: text,
+                barangay: item.name,
               }))
             }
-            placeholder="e.g. Brgy. San Isidro"
-            placeholderTextColor="#aaa"
-            className="mb-4 rounded-[10px] border border-gray-200 bg-white px-4 py-3 text-base text-gray-900"
           />
 
-          {/* MUNICIPALITY */}
-          <FieldLabel label="Municipality / City" />
+          {/* PROVINCE (locked) */}
+          <FieldLabel label="Province (locked)" />
 
-          <TextInput
-            value={user.municipality}
-            onChangeText={(text) =>
-              setUser((prev) => ({
-                ...prev,
-                municipality: text,
-              }))
-            }
-            placeholder="e.g. Hagonoy"
-            placeholderTextColor="#aaa"
-            className="mb-4 rounded-[10px] border border-gray-200 bg-white px-4 py-3 text-base text-gray-900"
-          />
-
-          {/* PROVINCE */}
-          <FieldLabel label="Province" />
-
-          <TextInput
-            value={user.province}
-            onChangeText={(text) =>
-              setUser((prev) => ({
-                ...prev,
-                province: text,
-              }))
-            }
-            placeholder="e.g. Bulacan"
-            placeholderTextColor="#aaa"
-            className="mb-4 rounded-[10px] border border-gray-200 bg-white px-4 py-3 text-base text-gray-900"
-          />
+          <View className="mb-4 rounded-[10px] border border-gray-200 bg-gray-50 px-4 py-3">
+            <Text className="text-base text-gray-900">{BULACAN_PROVINCE}</Text>
+          </View>
 
           {/* ABOUT */}
           <View className="mb-2 mt-1 flex-row items-center">

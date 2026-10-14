@@ -261,6 +261,10 @@ const AddressScreen = () => {
 
                   </Text>
 
+                  <Text className="text-gray-600 text-xs mt-1">
+                    {item.barangay}{item.city ? `, ${item.city}` : ""}
+                  </Text>
+
                 </View>
 
                 {/* ACTIONS */}

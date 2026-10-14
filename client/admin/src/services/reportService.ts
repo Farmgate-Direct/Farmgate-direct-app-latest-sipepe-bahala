@@ -12,7 +12,7 @@ const usersRef = collection(db, "users");
 const ordersRef = collection(db, "orders");
 const productsRef = collection(db, "products");
 
-const COMPLETED_STATUS = "delivered";
+const COMPLETED_STATUSES = ["delivered", "claimed"];
 const PLATFORM_COMMISSION_RATE = 0.03;
 
 export interface ReportRange {
@@ -49,7 +49,7 @@ const roundMoney = (value: number) =>
 export const getReportStats = async (range: ReportRange = ALL_TIME_RANGE) => {
   try {
     const completedOrdersSnap = await getDocs(
-      query(ordersRef, where("status", "==", COMPLETED_STATUS)),
+      query(ordersRef, where("status", "in", COMPLETED_STATUSES)),
     );
     let gross = 0;
     let earnings = 0;
@@ -81,7 +81,7 @@ export const getYearRevenue = async (year: number) => {
   const safeYear = Number.isInteger(year) ? Math.min(Math.max(year, 2000), 2100) : new Date().getFullYear();
   try {
     const snapshot = await getDocs(
-      query(ordersRef, where("status", "==", COMPLETED_STATUS)),
+      query(ordersRef, where("status", "in", COMPLETED_STATUSES)),
     );
     const monthNames = [
       "Jan",
@@ -151,7 +151,7 @@ export const getSalesByCategory = async (
 ) => {
   try {
     const [ordersSnap, productsSnap] = await Promise.all([
-      getDocs(query(ordersRef, where("status", "==", COMPLETED_STATUS))),
+      getDocs(query(ordersRef, where("status", "in", COMPLETED_STATUSES))),
       getDocs(productsRef),
     ]);
     const productCategoryMap: Record<string, string> = {};
@@ -208,7 +208,7 @@ export const getTopFarmers = async (
       ...doc.data(),
     }));
     const ordersSnap = await getDocs(
-      query(ordersRef, where("status", "==", COMPLETED_STATUS)),
+      query(ordersRef, where("status", "in", COMPLETED_STATUSES)),
     );
     const salesMap: Record<
       string,
@@ -263,7 +263,7 @@ export const getTopProducts = async (
 ) => {
   try {
     const ordersSnap = await getDocs(
-      query(ordersRef, where("status", "==", COMPLETED_STATUS)),
+      query(ordersRef, where("status", "in", COMPLETED_STATUSES)),
     );
     const productMap: Record<
       string,
@@ -348,7 +348,6 @@ export const exportReportToPDF = ({
 
   const M = 36;
   const HEADER_H = 36;
-  const TARGET_BOTTOM_MARGIN = 30;
 
   const build = (
     cfg: { body: number; head: number; pad: number; gap: number; title: number },
@@ -390,7 +389,7 @@ export const exportReportToPDF = ({
         overflow: "ellipsize",
         fontSize: cfg.body,
       },
-      margin: { left: M, right: M, top: HEADER_H + 4, bottom: TARGET_BOTTOM_MARGIN },
+      margin: { left: M, right: M, top: HEADER_H + 4, bottom: 40 },
     };
 
     doc.setFillColor(21, 128, 61);
@@ -566,21 +565,24 @@ export const exportReportToPDF = ({
     });
     const finalY = (doc as any).lastAutoTable.finalY;
 
+    // Footer stays at the bottom of the page.
+    const footerLineY = pageHeight - 30;
+    const footerTextY = pageHeight - 19;
     doc.setDrawColor(21, 128, 61);
     doc.setLineWidth(1);
-    doc.line(M, pageHeight - 24, pageWidth - M, pageHeight - 24);
+    doc.line(M, footerLineY, pageWidth - M, footerLineY);
     doc.setTextColor(107, 114, 128);
     doc.setFont("helvetica", "normal");
     doc.setFontSize(7);
-    doc.text(`FarmGate Direct Admin  •  ${safeRange}  •  ${generatedOn}`, M, pageHeight - 13);
-    doc.text("Page 1 of 1", pageWidth - M, pageHeight - 13, { align: "right" });
+    doc.text(`FarmGate Direct Admin  •  ${safeRange}  •  ${generatedOn}`, M, footerTextY);
+    doc.text("Page 1 of 1", pageWidth - M, footerTextY, { align: "right" });
 
     return { doc, finalY, pageHeight };
   };
 
   let best: { doc: jsPDF; finalY: number; pageHeight: number } | null = null;
-  let bestCfg: any = configs[configs.length - 1];
-  let usedMonthly = monthlyFull;
+  let bestCfg: { body: number; head: number; pad: number; gap: number; title: number } = configs[configs.length - 1];
+  let usedMonthly: any[] = monthlyFull;
   let trimmedNote = "";
   outer: for (let trim = 0; trim <= Math.max(0, monthlyFull.length - 3); trim++) {
     const sliced = trim === 0 ? monthlyFull : monthlyFull.slice(trim);
@@ -605,30 +607,41 @@ export const exportReportToPDF = ({
     trimmedNote = `Showing recent ${sliced.length} of ${monthlyFull.length} months to fit one page`;
   }
 
-  const targetBottom = best.pageHeight - TARGET_BOTTOM_MARGIN;
-  const remaining = targetBottom - best.finalY;
-  if (remaining > 18) {
-    const bodyRows =
+  // Stretch content to fill one page.
+  let cur = best;
+  let curPad = bestCfg.pad;
+  let curGap = bestCfg.gap;
+  for (let iter = 0; iter < 12; iter++) {
+    const targetBottom = cur.pageHeight - 30 - 16;
+    const remaining = targetBottom - cur.finalY;
+    if (remaining < 8) break;
+    const totalBodyRows =
       1 +
       Math.max(usedMonthly.length, 1) +
       Math.max(categories.length, 1) +
       Math.max(farmers.length, 1) +
-      Math.max(products.length, 1) +
-      (usedMonthly.length ? 1 : 0) +
-      (categories.length ? 1 : 0);
-    const addPad = Math.min(4.5, (remaining * 0.68) / Math.max(bodyRows, 1) / 2);
-    const addGap = Math.min(6, (remaining * 0.32) / 5);
-    const stretched = {
+      Math.max(products.length, 1);
+    const totalRowsWithHeadFoot =
+      totalBodyRows + 5 + (usedMonthly.length ? 1 : 0) + (categories.length ? 1 : 0);
+    const addPad = Math.min(2.5, (remaining * 0.75) / Math.max(totalRowsWithHeadFoot, 1) / 2);
+    const addGap = Math.min(4, (remaining * 0.25) / 5);
+    if (addPad < 0.15 && addGap < 0.3) break;
+    const nextCfg = {
       ...bestCfg,
-      pad: Math.min(11, bestCfg.pad + addPad),
-      gap: Math.min(18, bestCfg.gap + addGap),
+      pad: Math.min(14, curPad + addPad),
+      gap: Math.min(26, curGap + addGap),
     };
-    const r2 = build(stretched, usedMonthly, trimmedNote);
-    if (r2.doc.getNumberOfPages() === 1) {
-      const rem2 = targetBottom - r2.finalY;
-      if (Math.abs(rem2) < Math.abs(remaining)) best = r2;
-    }
+    if (nextCfg.pad <= curPad && nextCfg.gap <= curGap) break;
+    const r2 = build(nextCfg, usedMonthly, trimmedNote);
+    if (r2.doc.getNumberOfPages() !== 1) break;
+    if (r2.finalY <= cur.finalY + 1) break;
+    cur = r2;
+    curPad = nextCfg.pad;
+    curGap = nextCfg.gap;
+    bestCfg = nextCfg;
+    if (curPad >= 14 && curGap >= 26) break;
   }
+  best = cur;
 
   (best.doc as jsPDF).save(`report-${fileDate}.pdf`);
 };

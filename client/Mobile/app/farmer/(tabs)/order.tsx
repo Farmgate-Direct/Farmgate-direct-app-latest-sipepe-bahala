@@ -510,14 +510,37 @@ export default function Orders() {
                   </View>
                 </View>
 
-                {/* ============ TOTAL ============ */}
-                <View className="mt-3 flex-row items-center justify-between border-t border-gray-100 pt-3">
-                  <Text className="text-[13px] font-bold uppercase tracking-widest text-gray-500">
-                    Total
-                  </Text>
-                  <Text className="text-xl font-extrabold text-[#14532d]">
-                    ₱{Number(item.total).toFixed(2)}
-                  </Text>
+                {/* ============ BREAKDOWN (subtotal, delivery fee + km, total) ============ */}
+                <View className="mt-3 border-t border-gray-100 pt-3">
+                  <View className="flex-row items-center justify-between">
+                    <Text className="text-xs text-gray-500">
+                      Subtotal
+                    </Text>
+                    <Text className="text-sm font-semibold text-gray-700">
+                      ₱{Number((item as any).subTotal ?? 0).toFixed(2)}
+                    </Text>
+                  </View>
+                  <View className="mt-1 flex-row items-center justify-between">
+                    <Text className="text-xs text-gray-500">
+                      Delivery fee
+                      {(item as any).distanceKm !== null &&
+                      (item as any).distanceKm !== undefined
+                        ? ` (${Number((item as any).distanceKm).toFixed(1)} km)`
+                        : ""}
+                      {" · yours"}
+                    </Text>
+                    <Text className="text-sm font-semibold text-gray-700">
+                      ₱{Number((item as any).deliveryFee || 0).toFixed(2)}
+                    </Text>
+                  </View>
+                  <View className="mt-1.5 flex-row items-center justify-between">
+                    <Text className="text-[13px] font-bold uppercase tracking-widest text-gray-500">
+                      Total
+                    </Text>
+                    <Text className="text-xl font-extrabold text-[#14532d]">
+                      ₱{Number(item.total).toFixed(2)}
+                    </Text>
+                  </View>
                 </View>
 
                 {showWaiting && (

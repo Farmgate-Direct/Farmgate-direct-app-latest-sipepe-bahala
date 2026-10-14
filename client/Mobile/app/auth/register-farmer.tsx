@@ -32,12 +32,54 @@ import {
   registerUser,
 } from "../../src/services/authService";
 import { auth } from "../../FirebaseConfig";
-import { reload } from "firebase/auth";
+import { reload, signOut } from "firebase/auth";
+import { doc, getDoc, getDocFromServer } from "firebase/firestore";
+import { db } from "../../FirebaseConfig";
+import { saveUserToFirestore } from "../../src/services/firestoreService";
 
-import {
-  saveUserToFirestore,
-} from "../../src/services/firestoreService";
-import { sendBrandedVerificationEmail } from "../../src/services/emailVerificationService";
+const normalizeStatus = (value: unknown) =>
+  String(value ?? "").trim().toLowerCase();
+
+// Laging server ang basahin para hindi magpakita ng lumang "pending"
+// kahit approved na sa admin (stale cache issue).
+const getFreshUserDoc = async (uid: string) => {
+  try {
+    return await getDocFromServer(doc(db, "users", uid));
+  } catch {
+    return await getDoc(doc(db, "users", uid));
+  }
+};
+
+const dialogForExistingStatus = (status: string) => {
+  if (status === "approved") {
+    return {
+      title: "Already registered",
+      message: "This email is already registered and approved. Please sign in instead.",
+      success: true as const,
+    };
+  }
+  // Rejected = wala na (auto-deleted sa Firestore + Auth, may Gmail notice),
+  // kaya kahit same email pwede gumawa ulit. Return null = huwag harangan,
+  // diretso fresh registration.
+  if (status === "rejected") {
+    return null;
+  }
+  if (status === "banned") {
+    return {
+      title: "Account is banned",
+      message: "Your account has been banned. Please contact support for assistance.",
+      success: false as const,
+    };
+  }
+  return {
+    title: "Account pending approval",
+    message: "Your account is pending admin approval. You can sign in after it has been approved.",
+    success: true as const,
+  };
+};
+
+import { resendVerificationByEmail, sendBrandedVerificationEmail } from "../../src/services/emailVerificationService";
+import { checkEmailStatus } from "../../src/services/emailStatusService";
 
 import {
   uploadValidIDAsync,
@@ -53,8 +95,11 @@ import {
 } from "../../utils/validators";
 import { useToast } from "../../context/ToastContext";
 
-const PSGC_BASE =
-  "https://psgc.gitlab.io/api";
+import {
+  BULACAN_PROVINCE,
+  BULACAN_CITIES,
+  barangaysForCity,
+} from "../../constants/bulacanBarangays";
 
 type InputProps = {
   label: string;
@@ -133,25 +178,33 @@ const RegisterFarmer = () => {
   const [checkingEmail, setCheckingEmail] =
     useState(false);
 
-  // ================= LOCATION (FIXED: Central Luzon / Bulacan, like Add Address) =================
-  const [locationLoading, setLocationLoading] =
-    useState(true);
+  // Cooldown para hindi mag-spam ng resend (bawat resend ay
+  // nag-i-invalidate ng lumang link kaya nagiging "expired").
+  const [cooldown, setCooldown] =
+    useState(0);
 
-  const [cities, setCities] =
-    useState<any[]>([]);
+  useEffect(() => {
+    if (cooldown <= 0) return;
+    const t = setTimeout(() => setCooldown((c) => c - 1), 1000);
+    return () => clearTimeout(t);
+  }, [cooldown]);
 
-  const [barangays, setBarangays] =
-    useState<any[]>([]);
+  // Panlaban sa paulit-ulit na submit kapag palpak ang password —
+  // 3 sunod na fail = 60s lock para hindi ma-rate-limit ng Firebase.
+  const [failedSubmits, setFailedSubmits] =
+    useState(0);
+  const [submitLockedUntil, setSubmitLockedUntil] =
+    useState(0);
 
-  const [
-    selectedRegion,
-    setSelectedRegion,
-  ] = useState<any>(null);
+  // ================= LOCATION (Bulacan locked, local dataset) =================
+  // Names match the backend dataset exactly (exact match only, no fuzzy).
+  const [locationLoading] = useState(false);
 
-  const [
-    selectedProvince,
-    setSelectedProvince,
-  ] = useState<any>(null);
+  const cities = BULACAN_CITIES.map((name) => ({ name, code: name }));
+
+  const [selectedRegion] = useState<any>({ name: "Central Luzon (Region III)" });
+
+  const [selectedProvince] = useState<any>({ name: BULACAN_PROVINCE });
 
   const [
     selectedCity,
@@ -169,182 +222,18 @@ const RegisterFarmer = () => {
   const [barangayFocus, setBarangayFocus] =
     useState(false);
 
-  // ================= LOAD FIXED LOCATION =================
+  // Farm location comes from the City + Barangay dropdowns below
+  // (delivery is priced from barangay centroids — no GPS).
+
+  // Barangays depend on the selected city (local dataset, synchronous).
+  const barangays = selectedCity
+    ? barangaysForCity(selectedCity.name).map((name) => ({ name, code: name }))
+    : [];
+
+  // Province is locked to Bulacan.
   useEffect(() => {
-
-    loadFixedLocation();
-
+    setProvince(BULACAN_PROVINCE);
   }, []);
-
-  const loadFixedLocation =
-    async () => {
-
-      try {
-
-        setLocationLoading(true);
-
-        // STEP 1: GET ALL REGIONS
-        const regionResponse =
-          await fetch(
-            `${PSGC_BASE}/regions`
-          );
-
-        if (!regionResponse.ok) {
-          throw new Error(
-            "Failed to fetch regions"
-          );
-        }
-
-        const regions =
-          await regionResponse.json();
-
-        // FIND CENTRAL LUZON
-        const centralLuzon =
-          regions.find(
-            (region: any) =>
-              region.name
-                ?.trim()
-                .toLowerCase() ===
-              "central luzon"
-          );
-
-        if (!centralLuzon) {
-          throw new Error(
-            "Central Luzon not found"
-          );
-        }
-
-        setSelectedRegion(
-          centralLuzon
-        );
-
-        // STEP 2: GET PROVINCES UNDER CENTRAL LUZON
-        const provinceResponse =
-          await fetch(
-            `${PSGC_BASE}/regions/${centralLuzon.code}/provinces`
-          );
-
-        if (!provinceResponse.ok) {
-          throw new Error(
-            "Failed to fetch provinces"
-          );
-        }
-
-        const provincesData =
-          await provinceResponse.json();
-
-        // FIND BULACAN
-        const bulacan =
-          provincesData.find(
-            (province: any) =>
-              province.name
-                ?.trim()
-                .toLowerCase() ===
-              "bulacan"
-          );
-
-        if (!bulacan) {
-          throw new Error(
-            "Bulacan not found"
-          );
-        }
-
-        setSelectedProvince(
-          bulacan
-        );
-
-        setProvince(
-          bulacan.name
-        );
-
-        // STEP 3: LOAD BULACAN CITIES/MUNICIPALITIES
-        await loadCities(
-          bulacan.code
-        );
-
-      } catch (error) {
-
-        console.log(
-          "Location loading error:",
-          error
-        );
-
-        showToast("Failed to load Bulacan locations. Please try again.");
-
-      } finally {
-
-        setLocationLoading(false);
-
-      }
-    };
-
-  // ================= LOAD CITIES =================
-  const loadCities =
-    async (
-      provinceCode: string
-    ) => {
-
-      try {
-
-        const response =
-          await fetch(
-            `${PSGC_BASE}/provinces/${provinceCode}/cities-municipalities`
-          );
-
-        if (!response.ok) {
-          throw new Error(
-            "Failed to fetch cities"
-          );
-        }
-
-        const data =
-          await response.json();
-
-        setCities(data);
-
-      } catch (error) {
-
-        console.log(
-          "City loading error:",
-          error
-        );
-
-      }
-    };
-
-  // ================= LOAD BARANGAYS =================
-  const loadBarangays =
-    async (
-      cityCode: string
-    ) => {
-
-      try {
-
-        const response =
-          await fetch(
-            `${PSGC_BASE}/cities-municipalities/${cityCode}/barangays`
-          );
-
-        if (!response.ok) {
-          throw new Error(
-            "Failed to fetch barangays"
-          );
-        }
-
-        const data =
-          await response.json();
-
-        setBarangays(data);
-
-      } catch (error) {
-
-        console.log(
-          "Barangay loading error:",
-          error
-        );
-
-      }
-    };
 
   // ================= PICK IMAGE =================
   const pickImage = async (
@@ -381,50 +270,162 @@ const RegisterFarmer = () => {
     setStep(2);
   };
 
-  const startEmailVerification = async () => {
+  // Step 2 -> Step 3: validate lang, WALANG Auth user na ginagawa dito.
+  // Ang Auth user ay ginagawa lang sa final submit (Step 3 Farm form),
+  // para walang orphan sa Authentication kapag hindi tinapos ang form.
+  const goToFarmStep = () => {
     const validationError = validatePasswords({ password, confirmPassword });
-
     if (validationError) {
       showToast(validationError);
       return;
     }
+    setStep(3);
+  };
 
+  const handleResendVerification = async () => {
+    if (loading) return;
+    if (cooldown > 0) {
+      showToast(`Wait ${cooldown}s before requesting a new link. Use the latest email we sent.`);
+      return;
+    }
+    const user = auth.currentUser;
+    // Walang session (nag-close ng app) = resend gamit lang ang email,
+    // walang password, sa backend.
+    if (!user || user.email?.toLowerCase() !== email.trim().toLowerCase()) {
+      try {
+        setLoading(true);
+        const result = await resendVerificationByEmail(email.trim());
+        if (result.alreadyVerified) {
+          showToast("Your email is already verified. Tap below to finish.");
+        } else if (result.sent) {
+          setCooldown(60);
+          showToast("A new verification link has been sent. Only the newest link works.");
+        } else if (result.exists === false) {
+          showToast("No account found for this email. Please submit registration first.");
+          setStep(1);
+        } else {
+          showToast("Could not resend. Check your connection and try again.");
+        }
+      } finally {
+        setLoading(false);
+      }
+      return;
+    }
     try {
       setLoading(true);
-      let user = auth.currentUser;
-      if (user?.email?.toLowerCase() !== email.trim().toLowerCase()) {
-        user = await registerUser(fullName.trim(), email.trim(), password);
-      } else {
-        await reload(user);
-      }
-
-      if (user.emailVerified) {
-        setStep(4);
-        showToast("Your email is already verified.");
-        return;
-      }
-
-      const result = await sendBrandedVerificationEmail();
+      const result = await sendBrandedVerificationEmail(fullName.trim());
       if (result.alreadyVerified) {
-        setStep(4);
-        showToast("Your email is already verified.");
-        return;
+        showToast("Your email is already verified. Tap below to finish.");
+      } else {
+        setCooldown(60);
+        showToast("A new verification link has been sent. Only the newest link works.");
       }
-      setStep(3);
-      showToast(`Verification link sent to ${email.trim()}.`);
     } catch (error: any) {
-      console.log("Email verification error:", error);
       showToast(getRegisterErrorMessage(error?.code));
     } finally {
       setLoading(false);
     }
   };
 
+  // Database (Firestore) + ID upload ay dito lang — PAGKATAPOS
+  // ma-verify ang email. Walang nase-save hangga't hindi verified.
+  const finalizeRegistration = async () => {
+    // Siguraduhing buo pa rin ang form (baka nag-back at nagbura).
+    const validationError =
+      validateDetails({ fullName, email, phone }) ||
+      validatePasswords({ password, confirmPassword }) ||
+      validateFarm({ farmName, selectedCity, selectedBarangay });
+
+    if (validationError) {
+      showToast(validationError);
+      setStep(3);
+      throw { code: "local/validation" };
+    }
+
+    if (!validID) {
+      showToast("Upload a clear photo of your valid ID.");
+      setStep(3);
+      throw { code: "local/validation" };
+    }
+
+    const user = auth.currentUser;
+
+    if (!user) throw { code: "auth/no-current-user" };
+
+    // GUARD: huwag i-overwrite ang existing account.
+    // Kapag approved na, huwag nang magpakita ng pending.
+    // Kapag rejected, wala na yon (deleted) — hayaang gumawa ulit.
+    const preExisting = await getFreshUserDoc(user.uid);
+    if (preExisting.exists()) {
+      const currentStatus = normalizeStatus(preExisting.data()?.status) || "pending";
+      if (currentStatus === "rejected") {
+        // Lumang doc na dapat burado na — huwag harangan, diretso fresh save.
+      } else {
+        setDialog(dialogForExistingStatus(currentStatus));
+        return;
+      }
+    }
+
+    // CLOUDINARY
+    const validIDUrl =
+      await uploadValidIDAsync(
+        validID as string
+      );
+
+    // FIRESTORE (delivery is priced from city + barangay)
+    await saveUserToFirestore(
+      user.uid,
+      {
+        uid: user.uid,
+        fullName: fullName.trim(),
+        email: email.trim(),
+        phone: toE164Phone(phone),
+        role: "farmer",
+        status: "pending",
+        farmName: farmName.trim(),
+        region:
+          selectedRegion?.name ||
+          "Central Luzon",
+        barangay: selectedBarangay?.name || barangay,
+        municipality: selectedCity?.name || municipality,
+        city: selectedCity?.name || municipality,
+        province: BULACAN_PROVINCE,
+        validID:
+          validIDUrl,
+        createdAt:
+          new Date(),
+      }
+    );
+
+    setDialog({
+      title: "Account pending approval",
+      message: "Your account is pending admin approval. You can sign in after it has been approved.",
+      success: true,
+    });
+  };
+
   const checkEmailVerification = async () => {
     const user = auth.currentUser;
+    // Walang session (nag-close ng app) = i-check sa backend gamit
+    // lang ang email. Kapag verified na, mag-sign in para tapusin.
     if (!user || user.email?.toLowerCase() !== email.trim().toLowerCase()) {
-      showToast("Restart registration to send a verification link.");
-      setStep(2);
+      try {
+        setCheckingEmail(true);
+        const status = await checkEmailStatus(email.trim());
+        if (!status?.exists) {
+          showToast("No account found for this email. Please submit registration first.");
+          setStep(1);
+          return;
+        }
+        if (!status.emailVerified) {
+          showToast("Verify your email using the link we sent, then try again.");
+          return;
+        }
+        showToast("Email verified! Please sign in to finish your registration.");
+        router.replace("/auth/login");
+      } finally {
+        setCheckingEmail(false);
+      }
       return;
     }
 
@@ -433,13 +434,39 @@ const RegisterFarmer = () => {
       await reload(user);
       if (!user.emailVerified) {
         showToast("Verify your email using the link we sent, then try again.");
+        setCheckingEmail(false);
         return;
       }
-      setStep(4);
-      showToast("Email verified. Continue registration.");
-    } catch (error) {
+    } catch (error: any) {
       console.error("Email verification check failed:", error);
+      // Burado na ang account sa server (na-reject): linisin ang session
+      // at bumalik sa umpisa para makagawa ulit.
+      if (
+        error?.code === "auth/user-token-expired" ||
+        error?.code === "auth/user-not-found"
+      ) {
+        try {
+          await signOut(auth);
+        } catch {}
+        showToast("Session expired. Please submit registration again.");
+        setCheckingEmail(false);
+        setStep(1);
+        return;
+      }
       showToast("Could not check email verification. Please try again.");
+      setCheckingEmail(false);
+      return;
+    }
+
+    // Verified na — saka lang i-upload ang ID at i-save sa database.
+    try {
+      await finalizeRegistration();
+    } catch (error: any) {
+      if (error?.code === "local/validation") return;
+      console.error("Finalize registration failed:", error);
+      showToast(getRegisterErrorMessage(error?.code));
+      // Bumalik sa Farm step para makapili muli ng ID kung kailangan.
+      setStep(3);
     } finally {
       setCheckingEmail(false);
     }
@@ -456,8 +483,16 @@ const RegisterFarmer = () => {
   };
 
   // ================= REGISTER =================
+  // Auth user ay ginagawa dito sa submit (kailangan para mag-send ng
+  // verification), pero WALANG sine-save sa database hangga't hindi
+  // verified ang email — ang save ay nasa finalizeRegistration.
   const handleRegister =
     async () => {
+
+      // Double-tap guard: kapag "ang tagal" at pinindot ulit, bawat pindot
+      // ay bagong createUser + sendEmailVerification = instant
+      // auth/too-many-requests. Isang request lang at a time.
+      if (loading || checkingEmail) return;
 
       if (locationLoading) {
 
@@ -492,59 +527,150 @@ const RegisterFarmer = () => {
         return;
       }
 
+      // City + Barangay are validated by validateFarm above (dropdowns only).
+
+      // Huwag i-spam ang submit — Firebase nagla-lockout (too-many-requests).
+      // Ang block ay per IP/network, kaya kahit ibang phone sa same WiFi
+      // ay blocked pa rin. Huwag tapusin sa paulit-ulit na pindot.
+      if (Date.now() < submitLockedUntil) {
+        const waitSecs = Math.ceil((submitLockedUntil - Date.now()) / 1000);
+        showToast(`Too many attempts. Wait ${waitSecs}s without tapping, then try once.`);
+        return;
+      }
+
+    // SIMPLE: email lang ang basehan, walang password.
+    // - Walang doc (verification hindi natapos, nag-close) = pwede pa
+    //   gamitin same email, HINDI "already registered".
+    // - May doc pending = "Your account is pending".
+    // - May doc approved = "Email already registered".
+    let emailCheck: Awaited<ReturnType<typeof checkEmailStatus>> = null;
       try {
 
         setLoading(true);
 
-        const user = auth.currentUser;
-        if (
-          !user ||
-          user.email?.toLowerCase() !== email.trim().toLowerCase() ||
-          !user.emailVerified
-        ) {
+        // ---- EMAIL-BASED DUPLICATE CHECK (walang password) ----
+        try {
+          emailCheck = await checkEmailStatus(email.trim());
+        } catch {
+          emailCheck = null;
+        }
+          if (emailCheck?.exists) {
+            const checked = String(emailCheck.status || "").trim().toLowerCase();
+            if (checked === "approved") {
+              setLoading(false);
+              setFailedSubmits(0);
+              setDialog({
+                title: "Already registered",
+                message: "This email is already registered. Please sign in instead.",
+                success: true,
+              });
+              return;
+            }
+            if (checked === "pending") {
+              setLoading(false);
+              setFailedSubmits(0);
+              setDialog({
+                title: "Account pending approval",
+                message: "Your account is pending approval. Please wait for admin approval.",
+                success: true,
+              });
+              return;
+            }
+            if (checked === "banned") {
+              setLoading(false);
+              setFailedSubmits(0);
+              setDialog({
+                title: "Account is banned",
+                message: "Your account has been banned. Please contact support for assistance.",
+                success: false,
+              });
+              return;
+            }
+            // rejected / no-doc / no-auth = huwag harangan, diretso fresh flow.
+          }
+
+        // ---- AUTH USER (dito lang, hindi sa Step 2) ----
+        // Kapag same session (nag-close lang pero same device), ituloy
+        // nang walang password. Kapag ibang session at existing Auth,
+        // huwag nang mag-sign-in gamit ang password.
+        let user = auth.currentUser;
+        if (user?.email?.toLowerCase() !== email.trim().toLowerCase()) {
+          try {
+            user = await registerUser(fullName.trim(), email.trim(), password);
+          } catch (createError: any) {
+            if (createError?.code === "auth/email-already-in-use") {
+              throw { code: "auth/email-already-in-use" };
+            }
+            throw createError;
+          }
+        } else {
+          try {
+            await reload(user);
+          } catch (reloadError: any) {
+            // Burado na ang Auth account sa server (na-reject) o expired
+            // ang token: linisin ang session at gumawa ng bago imbis na ma-stuck.
+            if (
+              reloadError?.code === "auth/user-token-expired" ||
+              reloadError?.code === "auth/user-not-found"
+            ) {
+              try {
+                await signOut(auth);
+              } catch {}
+              user = null;
+            } else {
+              throw reloadError;
+            }
+          }
+        }
+        if (!user) {
+          try {
+            user = await registerUser(fullName.trim(), email.trim(), password);
+          } catch (createError: any) {
+            if (createError?.code === "auth/email-already-in-use") {
+              throw { code: "auth/email-already-in-use" };
+            }
+            throw createError;
+          }
+        }
+
+        if (!user) throw { code: "auth/no-current-user" };
+
+        // Kung verified na at may Firestore doc na, tapos na ang registration.
+        // Huwag nang sabihing "Registration submitted" ulit — nakaka-confuse.
+        // Ipakita na lang ang totoong status ng existing account (server read
+        // para hindi lumang pending ang mabasa kahit approved na).
+        const freshVerified = auth.currentUser?.emailVerified ?? user.emailVerified;
+        if (freshVerified) {
+          const existing = await getFreshUserDoc(user.uid);
+          if (existing.exists()) {
+            const existingStatus = normalizeStatus(existing.data()?.status) || "pending";
+            // Rejected = tanggal na, pwede gumawa ulit — huwag harangan.
+            if (existingStatus !== "rejected") {
+              const existingDialog = dialogForExistingStatus(existingStatus);
+              if (existingDialog) {
+                setLoading(false);
+                setFailedSubmits(0);
+                setDialog(existingDialog);
+                return;
+              }
+            }
+          }
           setLoading(false);
-          setStep(3);
-          showToast("Verify your email before submitting your registration.");
+          setCooldown(60);
+          setFailedSubmits(0);
+          setStep(4);
+          showToast("Your email is already verified. Tap below to finish.");
           return;
         }
 
-        // CLOUDINARY
-        const validIDUrl =
-          await uploadValidIDAsync(
-            validID
-          );
-
-        // FIRESTORE
-        await saveUserToFirestore(
-          user.uid,
-          {
-            uid: user.uid,
-            fullName: fullName.trim(),
-            email: email.trim(),
-            phone: toE164Phone(phone),
-            role: "farmer",
-            status: "pending",
-            farmName: farmName.trim(),
-            region:
-              selectedRegion?.name ||
-              "Central Luzon",
-            barangay,
-            municipality,
-            province,
-            validID:
-              validIDUrl,
-            createdAt:
-              new Date(),
-          }
-        );
-
+        // ---- SEND VERIFICATION (save sa database mamaya pag verified) ----
+        await sendBrandedVerificationEmail(fullName.trim());
         setLoading(false);
 
-        setDialog({
-          title: "Registration submitted",
-          message: "Your farmer account is pending admin approval. You can sign in after it has been approved.",
-          success: true,
-        });
+        setCooldown(60);
+        setFailedSubmits(0);
+        setStep(4);
+        showToast(`Verification link sent to ${email.trim()}. Verify first — nothing is saved until your email is verified.`);
 
       } catch (error: any) {
 
@@ -554,7 +680,38 @@ const RegisterFarmer = () => {
 
         const code = error?.code;
 
-        if (code === "auth/email-already-in-use" || code === "auth/invalid-email") {
+        // auth/too-many-requests = Firebase IP/network block (minutes ang
+        // tagal). Kahit ibang phone sa same WiFi ay blocked pa rin. I-lock
+        // agad nang 3 minuto para hindi humaba ang block sa kakapindot.
+        if (code === "auth/too-many-requests") {
+          setSubmitLockedUntil(Date.now() + 180000);
+          setFailedSubmits((n) => n + 1);
+          setCooldown(60);
+          showToast(getRegisterErrorMessage(code));
+          return;
+        }
+
+        // 3 sunod na palpak = 60s lock para hindi ma-ban ng Firebase.
+        const fails = failedSubmits + 1;
+        setFailedSubmits(fails);
+        if (fails >= 3) {
+          setSubmitLockedUntil(Date.now() + 60000);
+        }
+
+        if (code === "auth/email-already-in-use") {
+          // Walang doc (verification hindi natapos) = pwede pa gamitin,
+          // HINDI "already registered". Diretso sa email step para
+          // ituloy ang verification.
+          setCooldown(60);
+          setFailedSubmits(0);
+          setStep(4);
+          showToast("Verification already sent to this email. Please check your inbox to continue.");
+          return;
+        }
+        if (
+          code === "auth/invalid-email" ||
+          code === "auth/invalid-credential"
+        ) {
           setStep(1);
         }
 
@@ -570,8 +727,8 @@ const RegisterFarmer = () => {
         {[
           { label: "Details", icon: "account-outline" as const },
           { label: "Password", icon: "lock-outline" as const },
-          { label: "Email", icon: "email-outline" as const },
           { label: "Farm", icon: "tractor-variant" as const },
+          { label: "Email", icon: "email-outline" as const },
         ].map((item, index) => {
           const itemStep = index + 1;
           const active = step >= itemStep;
@@ -673,8 +830,12 @@ const RegisterFarmer = () => {
               setter={setConfirmPassword}
               secure
             />
+
+            <Text className="text-gray-500 text-xs -mt-2 mb-4">
+              At least 8 characters, with letters and numbers.
+            </Text>
           </View>
-        ) : step === 3 ? (
+        ) : step === 4 ? (
           <View className="items-center py-5">
             <MaterialCommunityIcons name="email-check-outline" size={48} color="#14532d" />
             <Text className="text-gray-800 text-base font-semibold text-center mt-4">
@@ -683,33 +844,16 @@ const RegisterFarmer = () => {
             <Text className="text-gray-600 text-sm text-center mt-2">
               Open the verification link sent to {email.trim()}, then return here to continue.
             </Text>
+            <Text className="text-gray-500 text-xs text-center mt-2 px-4">
+              Only the newest link works — older links show "expired or already used". If you see "already used", just tap "I've verified my email" below.
+            </Text>
             <TouchableOpacity
-              onPress={async () => {
-                const user = auth.currentUser;
-                if (!user || user.email?.toLowerCase() !== email.trim().toLowerCase()) {
-                  showToast("Restart registration to resend the verification link.");
-                  return;
-                }
-                try {
-                  setLoading(true);
-                  const result = await sendBrandedVerificationEmail();
-                  if (result.alreadyVerified) {
-                    setStep(4);
-                    showToast("Your email is already verified.");
-                  } else {
-                    showToast("A new verification link has been sent.");
-                  }
-                } catch (error: any) {
-                  showToast(getRegisterErrorMessage(error?.code));
-                } finally {
-                  setLoading(false);
-                }
-              }}
-              disabled={loading}
+              onPress={handleResendVerification}
+              disabled={loading || cooldown > 0}
               className="mt-5"
             >
-              <Text className="font-semibold" style={{ color: "#14532d" }}>
-                Resend verification link
+              <Text className="font-semibold" style={{ color: cooldown > 0 ? "#9ca3af" : "#14532d" }}>
+                {cooldown > 0 ? `Resend verification link (${cooldown}s)` : "Resend verification link"}
               </Text>
             </TouchableOpacity>
           </View>
@@ -737,7 +881,7 @@ const RegisterFarmer = () => {
                 height: 56,
               }}
             >
-              <Text className="text-gray-800 text-[5px] font-medium">
+              <Text className="text-gray-800 text-[15px] font-medium">
                 {locationLoading
                   ? "Loading region..."
                   : selectedRegion?.name ||
@@ -759,7 +903,7 @@ const RegisterFarmer = () => {
                 height: 56,
               }}
             >
-              <Text className="text-gray-800 text-[5px] font-medium">
+              <Text className="text-gray-800 text-[15px] font-medium">
                 {locationLoading
                   ? "Loading province..."
                   : selectedProvince?.name ||
@@ -816,7 +960,7 @@ const RegisterFarmer = () => {
                 elevation: 8,
               }}
               placeholderStyle={{
-                fontSize: 5,
+                fontSize: 15,
                 color: "#9CA3AF",
               }}
               selectedTextStyle={{
@@ -908,13 +1052,7 @@ const RegisterFarmer = () => {
 
                 setBarangay("");
 
-                setBarangays([]);
-
                 setCityFocus(false);
-
-                loadBarangays(
-                  item.code
-                );
               }}
             />
 
@@ -1135,7 +1273,7 @@ const RegisterFarmer = () => {
             )}
             <TouchableOpacity
               disabled={loading || checkingEmail}
-              onPress={step === 1 ? nextStep : step === 2 ? startEmailVerification : step === 3 ? checkEmailVerification : handleRegister}
+              onPress={step === 1 ? nextStep : step === 2 ? goToFarmStep : step === 3 ? handleRegister : checkEmailVerification}
               className="items-center justify-center py-3.5 rounded-[5px] flex-1"
               style={{ backgroundColor: "#14532d" }}
               activeOpacity={0.85}
@@ -1147,12 +1285,12 @@ const RegisterFarmer = () => {
                   {step === 1
                     ? "Continue"
                     : step === 2
-                      ? "Send verification link"
+                      ? "Continue"
                       : step === 3
-                        ? checkingEmail
+                        ? "Submit registration"
+                        : checkingEmail
                           ? "Checking..."
-                          : "I’ve verified my email"
-                        : "Submit registration"}
+                          : "I’ve verified my email"}
                 </Text>
               )}
             </TouchableOpacity>
@@ -1183,26 +1321,53 @@ const RegisterFarmer = () => {
         onRequestClose={() => setDialog(null)}
       >
         <View className="flex-1 bg-black/50 justify-center px-6">
-          <View className="bg-white rounded-[10px] p-6">
-            {!dialog?.success && (
-              <View className="w-12 h-12 rounded-full bg-green-50 items-center justify-center mb-4">
-                <MaterialCommunityIcons
-                  name="information-outline"
-                  size={28}
-                  color="#14532d"
-                />
-              </View>
-            )}
-            <Text className="text-gray-900 text-lg font-bold mb-2">{dialog?.title}</Text>
-            <Text className="text-gray-600 text-sm leading-5">{dialog?.message}</Text>
+          <View className="bg-white rounded-[10px] p-6 items-center">
+            <View
+              className="w-14 h-14 rounded-full items-center justify-center mb-4"
+              style={{
+                backgroundColor: /rejected|banned/i.test(dialog?.title ?? "")
+                  ? "#fef2f2"
+                  : /pending/i.test(dialog?.title ?? "")
+                    ? "#fef3c7"
+                    : "#f0fdf4",
+              }}
+            >
+              <MaterialCommunityIcons
+                name={
+                  /rejected|banned/i.test(dialog?.title ?? "")
+                    ? "alert-circle-outline"
+                    : /pending/i.test(dialog?.title ?? "")
+                      ? "clock-outline"
+                      : "check-circle-outline"
+                }
+                size={30}
+                color={
+                  /rejected|banned/i.test(dialog?.title ?? "")
+                    ? "#dc2626"
+                    : /pending/i.test(dialog?.title ?? "")
+                      ? "#d97706"
+                      : "#14532d"
+                }
+              />
+            </View>
+            <Text className="text-gray-900 text-lg font-bold mb-2 text-center">{dialog?.title}</Text>
+            <Text className="text-gray-600 text-sm leading-5 text-center">{dialog?.message}</Text>
             <TouchableOpacity
-              onPress={() => {
+              onPress={async () => {
                 const success = dialog?.success;
                 setDialog(null);
-                if (success) router.replace("/auth/login");
+                if (success) {
+                  try { await signOut(auth); } catch {}
+                  router.replace("/auth/login");
+                }
               }}
-              className="items-center py-3 rounded-[10px] mt-5"
-              style={{ backgroundColor: "#14532d" }}
+              activeOpacity={0.85}
+              className="items-center justify-center py-3 rounded-[10px] mt-5 w-full"
+              style={{
+                backgroundColor: /rejected|banned/i.test(dialog?.title ?? "")
+                  ? "#dc2626"
+                  : "#14532d",
+              }}
             >
               <Text className="text-white font-semibold">{dialog?.success ? "Continue to sign in" : "Got it"}</Text>
             </TouchableOpacity>

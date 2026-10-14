@@ -251,8 +251,9 @@ const Homepage = () => {
   );
 
   // ---------- derived metrics (puro real data) ----------
+  // "claimed" is the pickup equivalent of "delivered" — both are completed.
   const completedOrders = useMemo(
-    () => orders.filter((o) => o.status === "delivered"),
+    () => orders.filter((o) => o.status === "delivered" || o.status === "claimed"),
     [orders]
   );
 

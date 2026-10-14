@@ -39,6 +39,42 @@ service cloud.firestore {
           && request.resource.data.status == resource.data.status);
       allow delete: if isActiveAdmin();
     }
+    // Fee fields are SERVER-written (POST /orders, /accept, /create-payment,
+    // farmer set-fee endpoint). Clients must neither invent them at creation
+    // nor change them afterwards.
+    function feeFieldLocked(field) {
+      return field in resource.data
+        ? (field in request.resource.data && request.resource.data[field] == resource.data[field])
+        : !(field in request.resource.data);
+    }
+
+    function feeFieldsLocked() {
+      return feeFieldLocked('deliveryFee')
+        && feeFieldLocked('feeStatus')
+        && feeFieldLocked('distanceKm')
+        && feeFieldLocked('adjustedDistanceKm')
+        && feeFieldLocked('deliveryTier')
+        && feeFieldLocked('roadFactor')
+        && feeFieldLocked('tierVersion')
+        && feeFieldLocked('deliveryMethod')
+        && feeFieldLocked('manualFee')
+        && feeFieldLocked('manualDeliveryFee')
+        && feeFieldLocked('manualFeePins');
+    }
+
+    function noFeeFields() {
+      return !('deliveryFee' in request.resource.data)
+        && !('feeStatus' in request.resource.data)
+        && !('distanceKm' in request.resource.data)
+        && !('adjustedDistanceKm' in request.resource.data)
+        && !('deliveryTier' in request.resource.data)
+        && !('roadFactor' in request.resource.data)
+        && !('tierVersion' in request.resource.data)
+        && !('deliveryMethod' in request.resource.data)
+        && !('manualFee' in request.resource.data)
+        && !('manualDeliveryFee' in request.resource.data)
+        && !('manualFeePins' in request.resource.data);
+    }
 
     match /orders/{orderId} {
       allow get: if isActiveAdmin()
@@ -46,11 +82,31 @@ service cloud.firestore {
           || request.auth.uid == resource.data.farmerId));
       allow list: if isActiveAdmin();
       allow create: if isSignedIn()
-        && request.resource.data.buyerId == request.auth.uid;
-      allow update: if isActiveAdmin()
+        && request.resource.data.buyerId == request.auth.uid
+        && noFeeFields();
+      allow update: if (isActiveAdmin()
         || (isSignedIn() && (request.auth.uid == resource.data.buyerId
-          || request.auth.uid == resource.data.farmerId));
+          || request.auth.uid == resource.data.farmerId)))
+        && feeFieldsLocked();
       allow delete: if false;
+    }
+
+    match /addresses/{addressId} {
+      // Buyer delivery addresses. Owner-only. lat/lng is the authoritative
+      // delivery destination (OSRM pins); text fields are courier-only.
+      allow get: if isActiveAdmin()
+        || (isSignedIn() && request.auth.uid == resource.data.userId);
+      // NOTE: list is signed-in-only because the app queries
+      // addresses with where(userId == uid). Per-doc get/update/delete
+      // still enforce owner-only above. Do not run unfiltered queries.
+      allow list: if isActiveAdmin() || isSignedIn();
+      allow create: if isSignedIn()
+        && request.resource.data.userId == request.auth.uid;
+      allow update: if isActiveAdmin()
+        || (isSignedIn() && request.auth.uid == resource.data.userId
+          && request.resource.data.userId == resource.data.userId);
+      allow delete: if isActiveAdmin()
+        || (isSignedIn() && request.auth.uid == resource.data.userId);
     }
 
     match /adminActivities/{activityId} {
@@ -60,7 +116,7 @@ service cloud.firestore {
         && request.resource.data.keys().hasOnly(['action', 'description', 'adminId', 'adminName', 'adminEmail', 'targetId', 'targetName', 'createdAt'])
         && request.resource.data.description is string
         && request.resource.data.description.size() <= 500
-        && request.resource.data.action in ['login', 'logout', 'approve_registration', 'decline_registration', 'ban_user', 'unban_user', 'create_admin', 'update_profile_name', 'update_password', 'export_report'];
+        && request.resource.data.action in ['login', 'logout', 'approve_registration', 'decline_registration', 'ban_user', 'unban_user', 'create_admin', 'update_profile_name', 'update_password', 'export_report', 'update_payout_account', 'admin_withdraw'];
       allow update, delete: if false;
     }
 

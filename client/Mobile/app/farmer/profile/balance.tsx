@@ -16,14 +16,13 @@ import {
 import { useFarmerAlert } from "@/context/FarmerAlertContext";
 
 import {
-  getFarmerPayoutAccount,
-  getFarmerWallet,
-  getWalletSummary,
-  getWalletTransactions,
+  getPendingGcashEarnings,
+  getWalletOverview,
   createCommissionDeposit,
   getCommissionDepositStatus,
   requestFarmerWithdrawal,
   saveFarmerPayoutAccount,
+  syncStuckWithdrawals,
 } from "@/src/services/walletService";
 
 import {
@@ -200,15 +199,28 @@ export default function FarmerWallet() {
 
   const [accountName, setAccountName] = useState("");
   const [accountNumber, setAccountNumber] = useState("");
-  const [postalCode, setPostalCode] = useState("");
 
   // True after the first successful load (so refocus does not flash a spinner)
   const hasLoadedRef = useRef(false);
   // Prevents two overlapping deposit checks from showing duplicate alerts
   const checkingDepositRef = useRef(false);
+  const loadingWalletRef = useRef(false);
+  const lastReloadRef = useRef(0);
   const appState = useRef(AppState.currentState);
+  const [serverWithdrawable, setServerWithdrawable] = useState<number | null>(
+    null
+  );
+  // Auto-sync runs at most once per screen focus, so a stuck withdrawal
+  // can heal without hammering Xendit on every reload.
+  const syncAttemptedRef = useRef(false);
 
   const loadWallet = useCallback(async () => {
+    // Debounce: ignore overlapping calls and refocus storms (<2s apart).
+    if (loadingWalletRef.current) return;
+    if (Date.now() - lastReloadRef.current < 2000) return;
+    loadingWalletRef.current = true;
+    lastReloadRef.current = Date.now();
+
     const isFirstLoad = !hasLoadedRef.current;
 
     try {
@@ -216,19 +228,52 @@ export default function FarmerWallet() {
         setLoading(true);
       }
 
-      const [summary, history] = await Promise.all([
-        getWalletSummary(),
-        getWalletTransactions(),
-      ]);
+      // Single roundtrip: wallet + payout + history (1 auth on server).
+      const overview = await getWalletOverview();
 
-      setWallet(summary.wallet);
-      setPayoutAccount(summary.payoutAccount);
-      setTransactions(history);
+      setWallet(overview.wallet);
+      setPayoutAccount(overview.payoutAccount);
+      setTransactions(overview.transactions);
+      setServerWithdrawable(overview.withdrawableAmount);
 
-      setAccountName(summary.payoutAccount?.accountName || "");
-      setPostalCode(summary.payoutAccount?.postalCode || "");
+      setAccountName(overview.payoutAccount?.accountName || "");
 
       hasLoadedRef.current = true;
+
+      // Heal withdrawals stuck in pending/processing when the Xendit
+      // payout webhook never arrived. Runs once per focus; reloads past
+      // the 2s debounce only when something actually changed.
+      const hasStuckWithdrawal = (overview.transactions || []).some(
+        (t) =>
+          String(t.type || "") === "withdrawal" &&
+          ["pending", "processing", "pending_review"].includes(
+            String(t.status || "").toLowerCase()
+          )
+      );
+
+      if (hasStuckWithdrawal && !syncAttemptedRef.current) {
+        syncAttemptedRef.current = true;
+
+        void syncStuckWithdrawals()
+          .then((result) => {
+            if (Number(result?.synced || 0) > 0) {
+              setTimeout(() => {
+                void loadWallet();
+              }, 2500);
+            }
+          })
+          .catch((e) => console.log("SYNC WITHDRAWALS ERROR:", e));
+      }
+
+      // Pending earnings are a heavier scan on the server, so load them
+      // lazily without blocking the balance UI.
+      void getPendingGcashEarnings()
+        .then((pending) => {
+          setWallet((prev) =>
+            prev ? { ...prev, pendingBalance: Number(pending || 0) } : prev
+          );
+        })
+        .catch((e) => console.log("PENDING GCASH ERROR:", e));
     } catch (error: any) {
       console.log("LOAD FARMER WALLET ERROR:", error);
 
@@ -239,6 +284,7 @@ export default function FarmerWallet() {
         );
       }
     } finally {
+      loadingWalletRef.current = false;
       if (isFirstLoad) {
         setLoading(false);
       }
@@ -340,6 +386,7 @@ export default function FarmerWallet() {
 
   useFocusEffect(
     useCallback(() => {
+      syncAttemptedRef.current = false;
       void loadWallet();
 
       // Also covers the case where the app was closed during the payment.
@@ -347,27 +394,28 @@ export default function FarmerWallet() {
     }, [loadWallet, checkActiveDepositWithRetry])
   );
 
-  const withdrawableAmount = wallet
-    ? Math.max(
-        0,
-        Number(wallet.availableBalance || 0) -
-          Number(wallet.reservedBalance || 0) -
-          Number(wallet.codCommissionDue || 0) -
-          Number(wallet.codDeliveryFeeDue || 0)
-      )
-    : 0;
+  // Server is the source of truth (available - reserved). Fall back to a
+  // local calc only before the first overview response arrives.
+  const withdrawableAmount =
+    serverWithdrawable !== null
+      ? Math.max(0, Number(serverWithdrawable || 0))
+      : wallet
+        ? Math.max(
+            0,
+            Number(wallet.availableBalance || 0) -
+              Number(wallet.reservedBalance || 0)
+          )
+        : 0;
 
   const openPayoutModal = () => {
     setAccountName(payoutAccount?.accountName || "");
     setAccountNumber("");
-    setPostalCode(payoutAccount?.postalCode || "");
     setShowPayoutModal(true);
   };
 
   const handleSavePayoutAccount = async () => {
     const cleanName = accountName.trim();
     const cleanNumber = accountNumber.replace(/\D/g, "");
-    const cleanPostal = postalCode.replace(/\D/g, "");
 
     if (cleanName.length < 3) {
       Alert.alert("Required", "Enter the GCash account name.");
@@ -382,21 +430,16 @@ export default function FarmerWallet() {
       return;
     }
 
-    if (!/^\d{4}$/.test(cleanPostal)) {
-      Alert.alert(
-        "Invalid Postal Code",
-        "Enter a valid 4-digit Philippine postal code."
-      );
-      return;
-    }
-
     try {
       setSavingPayout(true);
 
+      // Postal code is no longer asked in the UI. Reuse the stored one so
+      // the server (Xendit payout) still gets a valid 4-digit code; when
+      // there is none, the server falls back to the farmer profile.
       const saved = await saveFarmerPayoutAccount({
         accountName: cleanName,
         accountNumber: cleanNumber,
-        postalCode: cleanPostal,
+        postalCode: payoutAccount?.postalCode || undefined,
       });
 
       setPayoutAccount(saved);
@@ -597,7 +640,16 @@ export default function FarmerWallet() {
         );
       }
     } catch (error: any) {
-      console.log("WITHDRAW ERROR:", error);
+      console.log("WITHDRAW ERROR:", error?.details || error);
+
+      // Surface gateway validation details (which fields Xendit rejected).
+      const detailText = error?.details
+        ? `\n\nDetails: ${
+            typeof error.details === "string"
+              ? error.details
+              : JSON.stringify(error.details).slice(0, 500)
+          }`
+        : "";
 
       /*
         The request may have reached the server even if the app saw an error
@@ -605,7 +657,7 @@ export default function FarmerWallet() {
       */
       Alert.alert(
         "Withdrawal Failed",
-        `${error?.message || "Failed to create the GCash payout."}\n\nPlease check your wallet history before trying again.`
+        `${error?.message || "Failed to create the GCash payout."}${detailText}\n\nPlease check your wallet history before trying again.`
       );
 
       await loadWallet();
@@ -617,6 +669,8 @@ export default function FarmerWallet() {
   useEffect(() => {
     /*
       Detect returning from the external Xendit browser.
+      Single refresh only — loadWallet is already debounced (2s), so the
+      old triple-refresh (0s + 1.5s + 4s = ~9 backend hits) is gone.
     */
     const subscription = AppState.addEventListener("change", (nextState) => {
       const wasBackground =
@@ -626,11 +680,7 @@ export default function FarmerWallet() {
 
       if (wasBackground && nextState === "active") {
         void checkActiveDepositWithRetry();
-
-        // Background refreshes only.
         void loadWallet();
-        setTimeout(() => void loadWallet(), 1500);
-        setTimeout(() => void loadWallet(), 4000);
       }
     });
 
@@ -676,7 +726,7 @@ export default function FarmerWallet() {
               <Ionicons name="wallet-outline" size={27} color="white" />
             </View>
 
-            <View className="ml-3">
+            <View className="ml-3 flex-1 pr-1">
               <Text className="text-green-100 font-medium">
                 Wallet Balance
               </Text>
@@ -693,6 +743,15 @@ export default function FarmerWallet() {
           <Text className="text-green-100 text-xs mt-2">
             Available wallet balance
           </Text>
+
+          {Number(wallet?.reservedBalance || 0) > 0 ? (
+            <View className="flex-row items-center bg-white/15 rounded-2xl p-3 mt-4">
+              <Ionicons name="time-outline" size={20} color="white" />
+              <Text className="text-white text-xs ml-2 flex-1">
+                {formatMoney(wallet?.reservedBalance || 0)} is being processed for GCash payout. It stays in your balance until our payment provider confirms it.
+              </Text>
+            </View>
+          ) : null}
         </View>
 
         <View className="bg-white rounded-2xl p-4 mb-4">
@@ -1025,18 +1084,6 @@ export default function FarmerWallet() {
               keyboardType="phone-pad"
               maxLength={11}
               className="bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 mb-4"
-            />
-
-            <Text className="text-gray-500 text-xs mb-2">
-              Postal code
-            </Text>
-            <TextInput
-              value={postalCode}
-              onChangeText={setPostalCode}
-              placeholder="3000"
-              keyboardType="number-pad"
-              maxLength={4}
-              className="bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 mb-2"
             />
 
             <Text className="text-gray-400 text-[11px] mb-5">

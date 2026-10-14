@@ -21,7 +21,9 @@ export type AdminActivityAction =
   | "create_admin"
   | "update_profile_name"
   | "update_password"
-  | "export_report";
+  | "export_report"
+  | "update_payout_account"
+  | "admin_withdraw";
 
 const MAX_DESCRIPTION_LENGTH = 500;
 const MAX_COUNT = 50;

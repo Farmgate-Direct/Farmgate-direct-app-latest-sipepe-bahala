@@ -201,6 +201,17 @@ export function useBuyerNotifications() {
               (o as any).deliveredAt || (o as any).updatedAt || o.createdAt,
           });
           break;
+        case "claimed":
+          list.push({
+            ...base,
+            id: `order-claimed-${o.id}`,
+            kind: "order",
+            title: "Order claimed",
+            body: `Your order ${no} from ${farm} was claimed.`,
+            createdAt:
+              (o as any).deliveredAt || (o as any).updatedAt || o.createdAt,
+          });
+          break;
         case "cancelled":
           list.push({
             ...base,

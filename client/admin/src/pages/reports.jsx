@@ -353,13 +353,13 @@ const ReportAnalytics = () => {
       <div className="mb-5 sm:mb-6 lg:mb-8 rounded-[10px] p-[18px] sm:p-6 lg:p-8 bg-[#14532d] flex justify-between items-center gap-4">
         <div className="min-w-0">
           <p className="text-[10px] font-bold tracking-[0.2em] text-[#bbf7d0] uppercase">
-            Analytics
+            Overview
           </p>
           <h1 className="text-xl font-black text-white tracking-tight">
             Reports
           </h1>
           <p className="text-xs text-[#dcfce7] mt-1">
-            Sales analytics and platform performance
+            Sales and platform performance
           </p>
         </div>
         <div className="flex items-center gap-3 shrink-0">

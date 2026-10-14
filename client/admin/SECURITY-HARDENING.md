@@ -80,7 +80,27 @@ File: `firestore.rules`. Must be published in the Firebase Console to take effec
   ban, unban, profile-update, password-change, and report-export are logged
   to `adminActivities`. Logging never throws, so it cannot break the action.
 
+## 9. Wallet hardening (`src/pages/wallet.jsx`, `src/services/walletService.ts`)
+
+- Input validation: account name trimmed, 3–100 chars; GCash number stripped
+  to digits and must match `09XXXXXXXXX` (`639...` is normalized); amount must
+  match `digits + optional 2-decimal` and be within 1–10,000,000. Invalid input
+  is rejected before any backend call. `maxLength` on name (100), number (11),
+  amount (12).
+- Timeouts: 30s for reads, 60s for withdraw. Abort shows a generic retry message.
+- Mass assignment: payout save only sends `accountName` + `accountNumber`.
+  City, province, street, postal code are not writable from the client.
+- Sensitive-data exposure: backend `error.message` and `details` are not shown
+  in toasts. Generic messages are used instead ("Could not save...", "Could not
+  process..."). Load errors use a generic message. Double-submit is blocked
+  with `saving` / `withdrawing` flags.
+- Safe fallbacks: transactions always resolve to an array; page clamp keeps
+  pagination in range.
+- Audit logging: payout update (`update_payout_account`) and withdrawal
+  (`admin_withdraw`) are logged. `firestore.rules` allowlist updated for both.
+  Real balance checks stay on the backend (`requireAdmin` + atomic hold).
+
 ## Verification
 
-- `npm run lint` — 0 new issues (11 pre-existing pattern errors remain).
-- `npm run build` — success (749 modules).
+- `npm run lint` — 0 new issues (13 pre-existing pattern errors remain).
+- `npm run build` — success (751 modules).

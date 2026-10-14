@@ -98,14 +98,39 @@ export const validateFarm = ({
 
 export const getRegisterErrorMessage = (code?: string) => {
   switch (code) {
+    // Fallback lang ito kapag walang backend (offline). Kapag may backend,
+    // email-based check na ang nagdedesisyon (approved vs pending) bago pa
+    // umabot dito, kaya neutral ang message para hindi magkamali.
     case "auth/email-already-in-use":
-      return "This email is already registered. Try signing in instead.";
+      return "This email is already in use. If pending approval, please wait. If approved, please sign in instead.";
+    case "auth/invalid-credential":
+    case "auth/wrong-password":
+    case "auth/user-not-found":
+      return "This email is already in use. Sign in with the original password. If pending approval, please wait.";
     case "auth/invalid-email":
       return "Invalid email format.";
     case "auth/weak-password":
       return "Password is too weak. Use at least 8 characters with letters and numbers.";
     case "auth/network-request-failed":
       return "Network error. Check your connection and try again.";
+    case "auth/too-many-requests":
+      return "Too many attempts. Wait a moment, then try again.";
+    case "auth/no-current-user":
+      return "Your session expired. Restart registration from Step 1.";
+    case "auth/user-token-expired":
+      return "Your session expired. Please submit registration again.";
+    case "auth/operation-not-allowed":
+      return "Email registration is disabled. Please contact support.";
+    case "functions/not-found":
+    case "functions/internal":
+    case "functions/unavailable":
+      return "Could not send the verification email. Check your connection and try again.";
+    case "valid-id/missing-image":
+      return "Upload a clear photo of your valid ID.";
+    case "valid-id/upload-failed":
+      return "Could not upload your valid ID. Check your connection and try a different image.";
+    case "permission-denied":
+      return "Could not save your registration. Please try again.";
     default:
       return "We couldn't complete your registration. Please try again.";
   }

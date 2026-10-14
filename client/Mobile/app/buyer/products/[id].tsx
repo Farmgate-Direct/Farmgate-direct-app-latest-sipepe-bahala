@@ -36,6 +36,14 @@ import {
   getReviewsByProduct,
 } from "@/src/services/productService";
 import { ProductType, BatchType, ReviewType } from "@/src/types/product";
+import {
+  getEggVariantOptions,
+  eggVariantToBaseQuantity,
+  baseStockToVariantStock,
+  formatTrayStock,
+  isEggProduct,
+  type EggVariant,
+} from "@/constants/productCatalog";
 
 const DARK_GREEN = "#14532d";
 const DESCRIPTION_PREVIEW_LENGTH = 180;
@@ -57,6 +65,8 @@ export default function ProductDetails() {
   const [quantity, setQuantity] = useState(1);
   const [modalVisible, setModalVisible] = useState(false);
   const [modalMode, setModalMode] = useState<"cart" | "buynow">("cart");
+  // Egg half/full tray choice (buyer side). Default = farmer's base unit.
+  const [eggVariant, setEggVariant] = useState<EggVariant | null>(null);
   const [farmerProfileImage, setFarmerProfileImage] = useState("");
   const [descriptionExpanded, setDescriptionExpanded] = useState(false);
   const [selectedMediaIndex, setSelectedMediaIndex] = useState(0);
@@ -209,6 +219,53 @@ export default function ProductDetails() {
     [sellableBatches]
   );
 
+  // ================= EGG HALF/FULL TRAY VARIANTS =================
+  // Kapag itlog ang produkto, may pagpipilian ang buyer: Half Tray
+  // (15 pcs) o Full Tray (30 pcs) — kahit ano pa ang base unit na
+  // nilista ng farmer. Auto-compute ang presyo mula sa base price.
+  const isEgg = product ? isEggProduct(product.name) : false;
+
+  const eggOptions = useMemo(
+    () =>
+      isEgg && product && currentBatch
+        ? getEggVariantOptions(product.unit, currentBatch.price)
+        : [],
+    [isEgg, product, currentBatch]
+  );
+
+  const activeEggOption = useMemo(() => {
+    if (eggOptions.length === 0) return null;
+    return (
+      eggOptions.find((o) => o.variant === eggVariant) ?? eggOptions[0] ?? null
+    );
+  }, [eggOptions, eggVariant]);
+
+  // Presyong ipapakita at sisingilin (variant price kapag itlog).
+  const unitPrice = activeEggOption
+    ? activeEggOption.price
+    : (currentBatch?.price ?? 0);
+
+  // Mabibiling dami sa napiling variant (converted mula sa base stock).
+  const variantMaxStock = useMemo(() => {
+    if (!product || !currentBatch) return 0;
+    if (!activeEggOption) return Math.floor(totalAvailableStock);
+    return baseStockToVariantStock(
+      totalAvailableStock,
+      product.unit,
+      activeEggOption.variant
+    );
+  }, [product, currentBatch, activeEggOption, totalAvailableStock]);
+
+  // Base-unit equivalent ng napiling dami (para sa stock deduction).
+  const baseQuantityForStock = useMemo(() => {
+    if (!product || !activeEggOption) return quantity;
+    return eggVariantToBaseQuantity(
+      activeEggOption.variant,
+      quantity,
+      product.unit
+    );
+  }, [product, activeEggOption, quantity]);
+
   // ================= REVIEW FILTER (All / per-batch) =================
   // "all" = lahat ng review ng product. Kapag pinili ang isang specific
   // na batchNumber, puro reviews LANG ng batch na yun ang makikita -
@@ -294,6 +351,20 @@ export default function ProductDetails() {
     }
     setModalMode(mode);
     setQuantity(1);
+    // Default variant = farmer's base unit (half tray listing -> half
+    // ang default; per tray listing -> full ang default). Kapag ubos
+    // na ang default (ex. 1 half tray na lang kaya walang mabubuong
+    // full), sa kabilang variant mag-default.
+    if (product && isEggProduct(product.name)) {
+      const base = String(product.unit || "").trim().toLowerCase();
+      const preferred: EggVariant = base === "half tray" ? "half" : "full";
+      const fallback: EggVariant = preferred === "half" ? "full" : "half";
+      const stockFor = (v: EggVariant) =>
+        baseStockToVariantStock(totalAvailableStock, product.unit, v);
+      setEggVariant(stockFor(preferred) >= 1 ? preferred : fallback);
+    } else {
+      setEggVariant(null);
+    }
     setModalVisible(true);
     Animated.parallel([
       Animated.timing(slideAnim, { toValue: 0, duration: 300, useNativeDriver: true }),
@@ -329,9 +400,15 @@ export default function ProductDetails() {
         farmName: product.farmName,
         name: product.name,
         image: product.image,
-        price: currentBatch.price,
+        // Kapag itlog: variant price/unit/qty ang naka-store (ang
+        // nakikita ng buyer). baseQuantity ang base-unit equivalent
+        // para sa stock deduction sa backend.
+        price: unitPrice,
         quantity,
-        unit: product.unit,
+        unit: activeEggOption ? activeEggOption.unit : product.unit,
+        eggVariant: activeEggOption ? activeEggOption.variant : null,
+        baseUnit: product.unit,
+        baseQuantity: baseQuantityForStock,
         createdAt: Date.now(),
       });
       showToast(`${product.name} added to cart!`);
@@ -355,10 +432,13 @@ export default function ProductDetails() {
             batchId: currentBatch.docId,
             batchNumber: currentBatch.batchNumber,
             name: product.name,
-            price: currentBatch.price,
+            price: unitPrice,
             image: product.image,
             quantity,
-            unit: product.unit,
+            unit: activeEggOption ? activeEggOption.unit : product.unit,
+            eggVariant: activeEggOption ? activeEggOption.variant : null,
+            baseUnit: product.unit,
+            baseQuantity: baseQuantityForStock,
           }],
         }]),
         buyerId,
@@ -557,7 +637,9 @@ export default function ProductDetails() {
                     </Text>
                   </Text>
                   <Text className="text-green-900 font-bold text-xs mt-1">
-                    {totalAvailableStock} {product.unit.replace(/^per\s+/i, "")} left
+                    {eggOptions.length === 2
+                      ? formatTrayStock(totalAvailableStock, product.unit)
+                      : `${totalAvailableStock} ${product.unit.replace(/^per\s+/i, "")} left`}
                   </Text>
                 </>
               ) : (
@@ -567,6 +649,13 @@ export default function ProductDetails() {
               )}
             </View>
           </View>
+
+          {/* Egg tray hint — full-width row para hindi masikip ang name */}
+          {eggOptions.length === 2 && currentBatch && (
+            <Text className="text-gray-500 text-[11px] mt-1.5">
+              Available in Half Tray (15 pcs) and Full Tray (30 pcs) — choose when you add to cart or buy now.
+            </Text>
+          )}
 
          {/* Farm location */}
           <View className="flex-row items-center justify-between mt-3">
@@ -880,20 +969,91 @@ export default function ProductDetails() {
                 </View>
 
                 <Text className="text-green-900 font-black text-xl mt-1.5">
-                  ₱{Number(currentBatch.price).toFixed(2)}
+                  ₱{Number(unitPrice).toFixed(2)}
                   <Text className="text-gray-400 text-xs font-normal">
                     {" / "}
-                    {product.unit}
+                    {activeEggOption ? activeEggOption.unit : product.unit}
                   </Text>
                 </Text>
 
+                {/* Iisang stock text lang (trays), anuman ang napiling size */}
                 <Text className="text-gray-400 text-xs mt-0.5">
-                  {totalAvailableStock} {product.unit} available
+                  {activeEggOption
+                    ? formatTrayStock(totalAvailableStock, product.unit)
+                    : `${totalAvailableStock} ${product.unit} available`}
                 </Text>
               </View>
             </View>
 
             <View className="h-px bg-gray-100 mb-4" />
+
+            {/* HALF / FULL TRAY CHOICE - itlog lang */}
+            {activeEggOption && eggOptions.length === 2 && (
+              <View className="mb-4">
+                <Text className="text-gray-700 font-semibold mb-2">
+                  Choose tray size
+                </Text>
+                <View className="flex-row gap-2">
+                  {eggOptions.map((opt) => {
+                    const selected = opt.variant === activeEggOption.variant;
+                    // Kapag hindi kayang buuin ang tray size na ito mula
+                    // sa stock (ex. 1 half tray na lang kaya walang full),
+                    // disabled ang option — walang numero para hindi malito.
+                    const optStock =
+                      product && currentBatch
+                        ? baseStockToVariantStock(
+                            totalAvailableStock,
+                            product.unit,
+                            opt.variant
+                          )
+                        : 0;
+                    const disabled = optStock < 1;
+                    return (
+                      <TouchableOpacity
+                        key={opt.variant}
+                        disabled={disabled}
+                        onPress={() => {
+                          setEggVariant(opt.variant);
+                          setQuantity(1);
+                        }}
+                        className="flex-1 rounded-[10px] border px-3 py-3"
+                        style={{
+                          borderColor: selected ? DARK_GREEN : "#e5e7eb",
+                          backgroundColor: selected
+                            ? "#f0fdf4"
+                            : disabled
+                              ? "#f3f4f6"
+                              : "#ffffff",
+                          borderWidth: selected ? 2 : 1,
+                          opacity: disabled ? 0.5 : 1,
+                        }}
+                      >
+                        <Text
+                          className="font-bold text-sm text-center"
+                          style={{ color: selected ? DARK_GREEN : "#374151" }}
+                        >
+                          {opt.variant === "half" ? "Half Tray" : "Full Tray"}
+                        </Text>
+                        <Text className="text-gray-500 text-[11px] text-center mt-0.5">
+                          {opt.pcs} pcs
+                        </Text>
+                        <Text
+                          className="font-black text-sm text-center mt-1"
+                          style={{ color: selected ? DARK_GREEN : "#111827" }}
+                        >
+                          ₱{Number(opt.price).toFixed(2)}
+                        </Text>
+                        {disabled && (
+                          <Text className="text-gray-400 text-[11px] text-center mt-0.5">
+                            Not available
+                          </Text>
+                        )}
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              </View>
+            )}
 
             <View className="flex-row justify-between items-center mb-4">
               <Text className="text-gray-700 font-semibold">
@@ -921,7 +1081,7 @@ export default function ProductDetails() {
                 <TouchableOpacity
                   onPress={() =>
                     setQuantity((q) =>
-                      Math.min(totalAvailableStock, q + 1)
+                      Math.min(Math.max(1, variantMaxStock), q + 1)
                     )
                   }
                   className="bg-green-900 w-10 h-10 rounded-[5px] items-center justify-center"
@@ -930,7 +1090,7 @@ export default function ProductDetails() {
                     name="add"
                     size={18}
                     color={
-                      quantity >= totalAvailableStock
+                      quantity >= Math.max(1, variantMaxStock)
                         ? "#86efac"
                         : "white"
                     }
@@ -939,12 +1099,11 @@ export default function ProductDetails() {
               </View>
             </View>
 
-            {quantity > currentBatch.stock && (
+            {baseQuantityForStock > currentBatch.stock && (
               <Text className="text-orange-600 text-[11px] mb-2 -mt-2">
                 {currentBatch.stock} {product.unit} mula sa Batch{" "}
-                {String(currentBatch.batchNumber).padStart(3, "0")}, at{" "}
-                {quantity - currentBatch.stock} {product.unit} mula sa
-                susunod na batch.
+                {String(currentBatch.batchNumber).padStart(3, "0")}, at ang
+                sobra ay mula sa susunod na batch.
               </Text>
             )}
 
@@ -952,10 +1111,13 @@ export default function ProductDetails() {
             <View className="flex-row justify-between items-center px-1 py-3 mb-5">
               <Text className="text-gray-500 font-medium">
                 Total
+                {activeEggOption
+                  ? ` (${quantity}x ${activeEggOption.label})`
+                  : ""}
               </Text>
 
               <Text className="font-black text-green-900 text-xl">
-                ₱{(Number(currentBatch.price) * quantity).toFixed(2)}
+                ₱{(Number(unitPrice) * quantity).toFixed(2)}
               </Text>
             </View>
 

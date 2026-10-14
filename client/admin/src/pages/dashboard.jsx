@@ -16,6 +16,7 @@ import {
 const statusStyles = {
   completed: "bg-[#DCFCE7] text-[#14532d]",
   delivered: "bg-[#DCFCE7] text-[#14532d]",
+  claimed: "bg-[#DCFCE7] text-[#14532d]",
   accepted: "bg-[#DCFCE7] text-[#14532d]",
   confirmed: "bg-[#DCFCE7] text-[#14532d]",
   processing: "bg-[#DCFCE7] text-[#14532d]",
@@ -42,6 +43,8 @@ const getStatusLabel = (status) => {
       return "To Receive";
     case "delivered":
       return "Delivered";
+    case "claimed":
+      return "Claimed";
     case "cancelled":
       return "Cancelled";
     default:
@@ -59,6 +62,7 @@ const ORDER_STATUSES = [
   "Processing",
   "To Receive",
   "Delivered",
+  "Claimed",
   "Cancelled",
 ];
 
@@ -129,7 +133,9 @@ const Dashboard = () => {
       pending: 0,
       accepted: 0,
       processing: 0,
+      to_receive: 0,
       delivered: 0,
+      claimed: 0,
       cancelled: 0,
     },
   });
@@ -168,8 +174,7 @@ const Dashboard = () => {
     loadDashboard();
   }, [loadDashboard]);
 
-  // Re-fetch when the tab regains focus so counts never look stale after
-  // approving/banning users on another page.
+  // Refresh when the tab is focused again.
   useEffect(() => {
     const handleFocus = () => {
       loadDashboard();
@@ -223,7 +228,9 @@ const Dashboard = () => {
       const title =
         status === "delivered"
           ? `Order delivered — ${product}`
-          : `Order ${order.status || "updated"} — ${product}`;
+          : status === "claimed"
+            ? `Order claimed — ${product}`
+            : `Order ${order.status || "updated"} — ${product}`;
       const sub = `${order.buyerName || "Buyer"} → ${getFarmerName(order)} · ${formatDate(order.createdAt)}`;
       return {
         key: `order-${order.id}`,
@@ -237,7 +244,7 @@ const Dashboard = () => {
       .slice(0, 6);
   }, [recentUsers, recentOrders]);
 
-  // Static preview para makita ang design kapag walang activity.
+  // Sample list when there is no activity yet.
   const PREVIEW_ACTIVITY = [
     {
       key: "preview-act-1",
@@ -283,7 +290,7 @@ const Dashboard = () => {
       icon: <GrUserWorker size={26} color="#14532d" />,
       iconBg: "bg-[#f0fdf4]",
       value: userCounts.farmers,
-      label: "Products listed",
+      label: "Registered Farmers",
       dark: false,
     },
     {
@@ -314,7 +321,7 @@ const Dashboard = () => {
 
   return (
     <>
-      {/* ── Mobile banner header ala buyer home BANNERS ── */}
+      {/* Top banner */}
       <div
         className="rounded-[10px] p-[18px] sm:p-6 lg:p-8 mb-5 sm:mb-6 lg:mb-8 flex flex-row items-center justify-between gap-3"
         style={{ backgroundColor: "#14532d" }}

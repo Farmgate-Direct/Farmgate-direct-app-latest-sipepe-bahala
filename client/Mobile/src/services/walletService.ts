@@ -11,7 +11,9 @@ const BACKEND_URL = String(
   process.env.EXPO_PUBLIC_BACKEND_URL || ""
 ).replace(/\/+$/, "");
 
-const REQUEST_TIMEOUT = 15000;
+// Render free tier cold start can take 30-60s. 15s was aborting healthy
+// requests and showing a false "took too long" error on first open.
+const REQUEST_TIMEOUT = 30000;
 
 /*
   Calls that talk to Xendit (deposit / withdraw) can take longer than a
@@ -54,7 +56,8 @@ const getFirebaseIdToken = async () => {
 const requestBackend = async <T = any>(
   path: string,
   options: RequestInit = {},
-  timeout = REQUEST_TIMEOUT
+  timeout = REQUEST_TIMEOUT,
+  retryOnTimeout = true
 ): Promise<T> => {
   if (!BACKEND_URL) {
     throw new Error("EXPO_PUBLIC_BACKEND_URL is not configured.");
@@ -62,47 +65,73 @@ const requestBackend = async <T = any>(
 
   const token = await getFirebaseIdToken();
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeout);
-
-  try {
-    const response = await fetch(`${BACKEND_URL}${path}`, {
-      ...options,
-      signal: controller.signal,
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-        ...(options.headers || {}),
-      },
-    });
-
-    const text = await response.text();
-
-    let data: any = {};
+  const attempt = async (): Promise<T> => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeout);
 
     try {
-      data = text ? JSON.parse(text) : {};
-    } catch {
-      data = { raw: text };
-    }
+      const response = await fetch(`${BACKEND_URL}${path}`, {
+        ...options,
+        signal: controller.signal,
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+          ...(options.headers || {}),
+        },
+      });
 
-    if (!response.ok) {
-      throw new Error(
-        data?.error ||
+      const text = await response.text();
+
+      let data: any = {};
+
+      try {
+        data = text ? JSON.parse(text) : {};
+      } catch {
+        data = { raw: text };
+      }
+
+      if (!response.ok) {
+        const status = response.status;
+        // Keep the HTTP status so the UI can tell "session expired" (401)
+        // apart from a real server failure (500).
+        const message =
+          data?.error ||
           data?.message ||
-          `Backend request failed with status ${response.status}.`
-      );
-    }
+          `Backend request failed with status ${status}.`;
+        const err: any = new Error(message);
+        err.status = status;
+        // Xendit/gateway validation details (which fields failed).
+        err.details = data?.details ?? null;
+        throw err;
+      }
 
-    return data as T;
+      return data as T;
+    } catch (error: any) {
+      if (error?.name === "AbortError") {
+        const err: any = new Error(
+          "The server is waking up (cold start). Please wait a moment and try again."
+        );
+        err.name = "AbortError";
+        throw err;
+      }
+
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
+  try {
+    return await attempt();
   } catch (error: any) {
-    if (error?.name === "AbortError") {
-      throw new Error("The server took too long to respond. Please try again.");
+    // One automatic retry covers the Render cold-start window without
+    // the user having to tap refresh.
+    if (retryOnTimeout && error?.name === "AbortError") {
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      return await attempt();
     }
 
     throw error;
-  } finally {
-    clearTimeout(timer);
   }
 };
 
@@ -258,3 +287,109 @@ export const getWalletSummary = async (farmerId?: string) => {
     withdrawableAmount,
   };
 };
+
+export type WalletOverview = {
+  wallet: FarmerWalletType;
+  payoutAccount: FarmerPayoutAccountType | null;
+  transactions: WalletTransaction[];
+  withdrawableAmount: number;
+  minimumCommissionDeposit: number;
+  minimumWithdrawal: number;
+};
+
+/*
+  Single roundtrip for the wallet screen (1 auth check on the server,
+  wallet + payout + history fetched in parallel there).
+  Falls back to the old 3-request flow when the live server hasn't been
+  redeployed yet (old server returns 404 "Route not found." for /overview).
+*/
+export const getWalletOverview = async (): Promise<WalletOverview> => {
+  try {
+    const result = await requestBackend<{
+      success: boolean;
+      wallet: FarmerWalletType;
+      payoutAccount: FarmerPayoutAccountType | null;
+      transactions: WalletTransaction[];
+      withdrawableAmount: number;
+      minimumCommissionDeposit: number;
+      minimumWithdrawal: number;
+    }>("/wallet/overview");
+
+    return {
+      wallet: result.wallet,
+      payoutAccount: result.payoutAccount,
+      transactions: Array.isArray(result.transactions)
+        ? result.transactions
+        : [],
+      withdrawableAmount: Number(result.withdrawableAmount || 0),
+      minimumCommissionDeposit: Number(result.minimumCommissionDeposit || 100),
+      minimumWithdrawal: Number(result.minimumWithdrawal || 1),
+    };
+  } catch (error: any) {
+    // Old backend (before redeploy) has no /overview route.
+    if (error?.status !== 404) throw error;
+
+    console.log("Overview route missing on server, using legacy wallet calls.");
+
+    const [walletRes, payoutRes, txRes] = await Promise.all([
+      requestBackend<{ success: boolean; wallet: FarmerWalletType }>(
+        "/wallet/me",
+        {},
+        REQUEST_TIMEOUT,
+        false
+      ),
+      requestBackend<{
+        success: boolean;
+        payoutAccount: FarmerPayoutAccountType | null;
+      }>("/wallet/payout-account", {}, REQUEST_TIMEOUT, false),
+      requestBackend<{ success: boolean; transactions: WalletTransaction[] }>(
+        "/wallet/transactions",
+        {},
+        REQUEST_TIMEOUT,
+        false
+      ),
+    ]);
+
+    const withdrawableAmount = Math.max(
+      0,
+      Number(walletRes.wallet?.availableBalance || 0) -
+        Number(walletRes.wallet?.reservedBalance || 0)
+    );
+
+    return {
+      wallet: walletRes.wallet,
+      payoutAccount: payoutRes.payoutAccount,
+      transactions: Array.isArray(txRes.transactions) ? txRes.transactions : [],
+      withdrawableAmount,
+      minimumCommissionDeposit: 100,
+      minimumWithdrawal: 1,
+    };
+  }
+};
+
+export type WithdrawalSyncResult = {
+  success: boolean;
+  checked: number;
+  synced: number;
+  stillPending: number;
+  results: {
+    id: string;
+    status: string;
+    synced: boolean;
+    xenditStatus?: string | null;
+    reason?: string;
+  }[];
+};
+
+/*
+  Heals withdrawals stuck in pending/processing when the Xendit payout
+  webhook never arrives (wrong webhook URL, token, etc). Safe to call any
+  time; the server no-ops when nothing is stuck.
+*/
+export const syncStuckWithdrawals = async (): Promise<WithdrawalSyncResult> =>
+  requestBackend<WithdrawalSyncResult>(
+    "/wallet/withdrawals/sync",
+    { method: "POST" },
+    GATEWAY_REQUEST_TIMEOUT,
+    false
+  );

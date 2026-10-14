@@ -199,7 +199,8 @@ const RequestApproval = () => {
       }
     } catch (error) {
       console.error(`Failed to ${action} user:`, error);
-      toastError("Action failed", `Could not ${action} this request. Please try again.`);
+      const detail = error?.message ? ` ${error.message}` : "";
+      toastError("Action failed", `Could not ${action} this request.${detail} Please try again.`);
     } finally {
       setActionLoading(false);
     }

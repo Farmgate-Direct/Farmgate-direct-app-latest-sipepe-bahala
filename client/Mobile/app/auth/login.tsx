@@ -1,9 +1,9 @@
 import { router } from "expo-router";
 import React, { useState } from "react";
 import {
-  Alert,
   ActivityIndicator,
   Image,
+  Modal,
   ScrollView,
   StatusBar,
   Text,
@@ -16,9 +16,17 @@ import { MaterialCommunityIcons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { signOut } from "firebase/auth";
 import { loginUser } from "../../src/services/authService";
-import { doc, getDoc } from "firebase/firestore";
+import { doc, getDoc, getDocFromServer } from "firebase/firestore";
 import { auth, db } from "../../FirebaseConfig";
 import { useToast } from "../../context/ToastContext";
+
+const getFreshUserDoc = async (uid: string) => {
+  try {
+    return await getDocFromServer(doc(db, "users", uid));
+  } catch {
+    return await getDoc(doc(db, "users", uid));
+  }
+};
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -39,11 +47,19 @@ const getAuthErrorMessage = (code?: string) => {
   }
 };
 
+type StatusDialog = {
+  title: string;
+  message: string;
+  variant: "pending" | "rejected" | "banned" | "default";
+};
+
 const Login = () => {
   const { showToast } = useToast();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [statusDialog, setStatusDialog] = useState<StatusDialog | null>(null);
 
   const handleLogin = async () => {
 
@@ -75,10 +91,9 @@ const Login = () => {
         password
       );
 
-      // FIRESTORE DATA
-      const userDoc = await getDoc(
-        doc(db, "users", user.uid)
-      );
+      // FIRESTORE DATA (server read para hindi stale pending
+      // ang mabasa kahit approved na sa admin)
+      const userDoc = await getFreshUserDoc(user.uid);
 
       if (!userDoc.exists()) {
         if (!user.emailVerified) {
@@ -86,7 +101,19 @@ const Login = () => {
           showToast("Please verify your email before completing registration.");
           return;
         }
-        showToast("User doesn't exist.");
+        // Verified na pero walang Firestore doc = hindi natapos ang
+        // registration (nawala ang session). Huwag i-sign out —
+        // ituloy sa registration imbis na dead-end.
+        showToast("Your email is verified but registration was not finished. Please continue your registration.");
+        router.replace("/auth/register");
+        return;
+      }
+
+      // Block unverified kahit may Firestore doc (nag-submit pero hindi
+      // pa klinick ang verification link).
+      if (!user.emailVerified) {
+        await signOut(auth);
+        showToast("Please verify your email first. Check your inbox for the verification link.");
         return;
       }
 
@@ -94,38 +121,47 @@ const Login = () => {
       // Bawal mag-login kapag hindi approved. Naka-signOut agad
       // para hindi maiwan ang Firebase session ng pending/rejected.
       const userData = userDoc.data();
-      const status = userData.status ?? "approved";
+      const status = String(userData.status ?? "approved").trim().toLowerCase();
 
       if (status === "pending") {
         await signOut(auth);
-        Alert.alert(
-          "Pending approval",
-          "Your account is waiting for admin approval. You cannot log in yet."
-        );
+        setStatusDialog({
+          title: "Pending approval",
+          message:
+            "Your account is waiting for admin approval. You cannot log in yet. We'll notify you once it's approved.",
+          variant: "pending",
+        });
         return;
       }
+      // Rejected = auto-deleted sa Firestore + Auth (may Gmail notice).
+      // Legacy fallback lang ito kung may lumang rejected doc pa.
       if (status === "rejected") {
         await signOut(auth);
-        Alert.alert(
-          "Account rejected",
-          "Your registration was rejected. Please contact support."
-        );
+        setStatusDialog({
+          title: "Registration rejected",
+          message:
+            "Your previous registration was rejected. Please check your Gmail for details. You may register again.",
+          variant: "rejected",
+        });
         return;
       }
       if (status === "banned") {
         await signOut(auth);
-        Alert.alert(
-          "Account is banned",
-          "Your account has been banned. Please contact support."
-        );
+        setStatusDialog({
+          title: "Account is banned",
+          message:
+            "Your account has been banned. Please contact support for assistance.",
+          variant: "banned",
+        });
         return;
       }
       if (status !== "approved") {
         await signOut(auth);
-        Alert.alert(
-          "Not approved",
-          "Your account is not approved yet."
-        );
+        setStatusDialog({
+          title: "Not approved",
+          message: "Your account is not approved yet.",
+          variant: "default",
+        });
         return;
       }
 
@@ -224,10 +260,22 @@ const Login = () => {
                 className="flex-1 py-3 px-3 text-gray-800"
                 placeholder="Enter your password"
                 placeholderTextColor="#9ca3af"
-                secureTextEntry
+                secureTextEntry={!showPassword}
                 value={password}
                 onChangeText={setPassword}
               />
+              <TouchableOpacity
+                accessibilityRole="button"
+                accessibilityLabel={showPassword ? "Hide password" : "Show password"}
+                onPress={() => setShowPassword((visible) => !visible)}
+                className="px-1 py-2"
+              >
+                <MaterialCommunityIcons
+                  name={showPassword ? "eye-off-outline" : "eye-outline"}
+                  size={21}
+                  color="#6b7280"
+                />
+              </TouchableOpacity>
             </View>
 
             <TouchableOpacity
@@ -257,6 +305,71 @@ const Login = () => {
           </View>
         </View>
       </ScrollView>
+
+      <Modal
+        visible={statusDialog !== null}
+        transparent
+        statusBarTranslucent
+        animationType="fade"
+        onRequestClose={() => setStatusDialog(null)}
+      >
+        <View className="flex-1 bg-black/50 justify-center px-6">
+          <View className="bg-white rounded-[10px] p-6 items-center">
+            <View
+              className="w-14 h-14 rounded-full items-center justify-center mb-4"
+              style={{
+                backgroundColor:
+                  statusDialog?.variant === "pending"
+                    ? "#fef3c7"
+                    : statusDialog?.variant === "rejected" ||
+                        statusDialog?.variant === "banned"
+                      ? "#fef2f2"
+                      : "#f0fdf4",
+              }}
+            >
+              <MaterialCommunityIcons
+                name={
+                  statusDialog?.variant === "pending"
+                    ? "clock-outline"
+                    : statusDialog?.variant === "rejected" ||
+                        statusDialog?.variant === "banned"
+                      ? "alert-circle-outline"
+                      : "information-outline"
+                }
+                size={30}
+                color={
+                  statusDialog?.variant === "pending"
+                    ? "#d97706"
+                    : statusDialog?.variant === "rejected" ||
+                        statusDialog?.variant === "banned"
+                      ? "#dc2626"
+                      : "#14532d"
+                }
+              />
+            </View>
+            <Text className="text-gray-900 text-lg font-bold text-center mb-2">
+              {statusDialog?.title}
+            </Text>
+            <Text className="text-gray-600 text-sm leading-5 text-center">
+              {statusDialog?.message}
+            </Text>
+            <TouchableOpacity
+              onPress={() => setStatusDialog(null)}
+              activeOpacity={0.85}
+              className="items-center justify-center py-3 rounded-[10px] mt-5 w-full"
+              style={{
+                backgroundColor:
+                  statusDialog?.variant === "rejected" ||
+                  statusDialog?.variant === "banned"
+                    ? "#dc2626"
+                    : "#14532d",
+              }}
+            >
+              <Text className="text-white font-semibold">Got it</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 };

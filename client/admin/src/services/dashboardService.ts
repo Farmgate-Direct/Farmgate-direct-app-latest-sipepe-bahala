@@ -10,11 +10,10 @@ import { db } from "../FirebaseConfig";
 const usersRef = collection(db, "users");
 const ordersRef = collection(db, "orders");
 
-const DELIVERED_STATUS = "delivered";
+const DELIVERED_STATUSES = ["delivered", "claimed"];
 const COMMISSION_RATE = 0.03;
 
-// Status/role values are normalized (trim + lowercase) so stray casing or
-// whitespace in stored docs can't silently skew the dashboard counts.
+// Lowercase + trim so counts stay correct.
 const norm = (value: any) => (value || "").toString().trim().toLowerCase();
 
 export const getPendingUsers = async () => {
@@ -81,6 +80,7 @@ export const getOrdersSummary = async () => {
       processing: 0,
       to_receive: 0,
       delivered: 0,
+      claimed: 0,
       cancelled: 0,
     };
     let earnings = 0;
@@ -88,7 +88,7 @@ export const getOrdersSummary = async () => {
       const data = doc.data();
       const status = norm(data.status);
       if (status in statusCounts) statusCounts[status] += 1;
-      if (status === DELIVERED_STATUS) {
+      if (DELIVERED_STATUSES.includes(status)) {
         earnings +=
           Math.round((data.total || 0) * COMMISSION_RATE * 100) / 100;
       }
@@ -105,6 +105,7 @@ export const getOrdersSummary = async () => {
         processing: 0,
         to_receive: 0,
         delivered: 0,
+        claimed: 0,
         cancelled: 0,
       },
     };

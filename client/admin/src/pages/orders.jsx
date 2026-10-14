@@ -291,6 +291,7 @@ const OrderPayments = () => {
   const statusStyle = (status) => {
     switch (status?.toLowerCase().replace(/[\s_-]+/g, "_")) {
       case "delivered":
+      case "claimed":
       case "accepted":
       case "processing":
         return "bg-[#DCFCE7] text-[#14532d]";
@@ -318,6 +319,8 @@ const OrderPayments = () => {
         return "To Receive";
       case "delivered":
         return "Delivered";
+      case "claimed":
+        return "Claimed";
       case "cancelled":
         return "Cancelled";
       default:
@@ -373,14 +376,14 @@ const OrderPayments = () => {
     }
     const acceptedAt =
       order.farmerDecisionAt ||
-      (["accepted", "processing", "to_receive", "delivered"].includes(
+      (["accepted", "processing", "to_receive", "delivered", "claimed"].includes(
         order.status?.toLowerCase?.() ?? order.status,
       )
         ? order.updatedAt || order.createdAt
         : null);
     const isAccepted =
       order.farmerDecision === "accepted" ||
-      ["accepted", "processing", "to_receive", "delivered"].includes(
+      ["accepted", "processing", "to_receive", "delivered", "claimed"].includes(
         order.status?.toLowerCase?.() ?? order.status,
       );
     if (isAccepted && acceptedAt) {
@@ -416,7 +419,7 @@ const OrderPayments = () => {
     if (order.deliveredAt) {
       steps.push({
         key: "delivered",
-        title: "Delivered",
+        title: order.delivery === "pickup" || order.status === "claimed" ? "Claimed" : "Delivered",
         date: order.deliveredAt,
         Icon: FiCheckCircle,
         color: "#2563EB",
@@ -551,6 +554,7 @@ const OrderPayments = () => {
                     "Processing",
                     "To Receive",
                     "Delivered",
+                    "Claimed",
                     "Cancelled",
                   ].map((option) => (
                     <button

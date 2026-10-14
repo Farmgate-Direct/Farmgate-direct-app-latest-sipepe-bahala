@@ -4,8 +4,7 @@ import { onAuthStateChanged, signOut } from "firebase/auth";
 import { doc, getDoc } from "firebase/firestore";
 import { auth, db } from "../FirebaseConfig";
 
-// Route-level gate only; every privileged read/write is still
-// enforced by Firestore rules on the server.
+// Page guard only. Firestore rules still do the real check.
 const ProtectedRoute = () => {
   const [loading, setLoading] = useState(true);
   const [authorized, setAuthorized] = useState(false);

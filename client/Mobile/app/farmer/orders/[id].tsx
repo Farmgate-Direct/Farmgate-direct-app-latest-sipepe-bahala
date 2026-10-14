@@ -870,20 +870,59 @@ export default function OrderDetails() {
           {/* ================= TOTAL ================= */}
           <View className="rounded-[10px] border border-green-100 bg-green-50 p-4">
 
-            <View className="flex-row justify-between">
+            <View className="flex-row justify-between mb-1.5">
+              <Text className="text-sm text-gray-600">
+                Subtotal
+              </Text>
+              <Text className="text-sm font-semibold text-gray-800">
+                ₱
+                {Number(
+                  order.subTotal ?? order.subtotal ?? 0
+                ).toFixed(2)}
+              </Text>
+            </View>
 
+            <View className="flex-row justify-between mb-1.5">
+              <Text className="text-sm text-gray-600">
+                Delivery fee
+                {order.delivery === "delivery" &&
+                order.distanceKm !== null &&
+                order.distanceKm !== undefined
+                  ? ` (${Number(order.distanceKm).toFixed(1)} km)`
+                  : ""}
+              </Text>
+              <Text className="text-sm font-semibold text-gray-800">
+                ₱
+                {Number(
+                  order.deliveryFee || 0
+                ).toFixed(2)}
+              </Text>
+            </View>
+
+            <View className="flex-row justify-between">
               <Text className="font-semibold text-gray-800">
                 Total
               </Text>
-
               <Text className="text-2xl font-bold text-[#14532d]">
                 ₱
                 {Number(
                   order.total
                 ).toFixed(2)}
               </Text>
-
             </View>
+
+            {order.delivery === "delivery" && Number(order.deliveryFee || 0) > 0 && (
+              <View className="mt-3 rounded-[8px] border border-green-200 bg-white p-2.5">
+                <Text className="text-xs font-bold text-[#14532d]">
+                  The delivery fee is yours.
+                </Text>
+                <Text className="mt-0.5 text-[11px] text-gray-600">
+                  {order.payment === "gcash"
+                    ? "GCash: the fee goes to you in full (no 3% commission — commission applies to products only)."
+                    : "COD: the fee is cash you already hold, so nothing extra is credited to your wallet."}
+                </Text>
+              </View>
+            )}
 
           </View>
 
@@ -943,23 +982,29 @@ export default function OrderDetails() {
         )}
 
         {!actionLoading && order.status === "processing" && (
-          <TouchableOpacity
-            onPress={handleToReceive}
-            className="mt-4 rounded-[10px] bg-purple-700 py-3.5"
-          >
-            <Text className="text-center font-bold text-white">Mark as To Receive</Text>
-          </TouchableOpacity>
+          <View className="border-t border-gray-100 bg-[#fafafa] pb-5 pt-2">
+            <TouchableOpacity
+              onPress={handleToReceive}
+              activeOpacity={0.8}
+              className="rounded-[10px] bg-purple-700 py-3.5"
+            >
+              <Text className="text-center font-bold text-white">Mark as To Receive</Text>
+            </TouchableOpacity>
+          </View>
         )}
 
         {!actionLoading && order.status === "to_receive" && (
-          <TouchableOpacity
-            onPress={handleDelivered}
-            className="mt-4 rounded-[10px] bg-[#14532d] py-3.5"
-          >
-            <Text className="text-center font-bold text-white">
-              {order.delivery === "pickup" ? "Mark as Claimed" : "Mark as Delivered"}
-            </Text>
-          </TouchableOpacity>
+          <View className="border-t border-gray-100 bg-[#fafafa] pb-5 pt-2">
+            <TouchableOpacity
+              onPress={handleDelivered}
+              activeOpacity={0.8}
+              className="rounded-[10px] bg-[#14532d] py-3.5"
+            >
+              <Text className="text-center font-bold text-white">
+                {order.delivery === "pickup" ? "Mark as Claimed" : "Mark as Delivered"}
+              </Text>
+            </TouchableOpacity>
+          </View>
         )}
 
         {actionLoading && (

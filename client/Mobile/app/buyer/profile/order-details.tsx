@@ -1,10 +1,11 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter, } from "expo-router";
-import React, { useEffect, useState, } from "react";
+import React, { useEffect, useRef, useState, } from "react";
 import {
   ActivityIndicator,
   Alert,
+  AppState,
   FlatList,
   Image,
   Modal,
@@ -18,7 +19,7 @@ import {
 import { doc, getDoc, onSnapshot, } from "firebase/firestore";
 import { db } from "../../../FirebaseConfig";
 import RateOrderModal from "./RateOrderModal";
-import { cancelOrder, createGcashPayment, } from "../../../src/services/orderService";
+import { cancelOrder, createGcashPayment, syncOrderPayment, } from "../../../src/services/orderService";
 import { useToast } from "@/context/ToastContext";
 import { OrderType, OrderProduct, } from "@/src/types/order";
 
@@ -85,6 +86,14 @@ export default function OrderDetails() {
 
   const [paying, setPaying] =
     useState(false);
+
+  // True after opening the Xendit browser. Used to sync the payment
+  // when the buyer returns, in case the webhook never arrived.
+  const paymentOpenedRef =
+    useRef(false);
+
+  const appState =
+    useRef(AppState.currentState);
 
   const [showConfirmCancelModal, setShowConfirmCancelModal] =
   useState(false);
@@ -221,6 +230,59 @@ export default function OrderDetails() {
     );
 
     return unsubscribe;
+  }, [orderId]);
+
+  // ================= SYNC AFTER GCASH BROWSER =================
+  // When the buyer returns from the Xendit browser, ask the backend
+  // for the live payment status. Heals orders stuck in "pending" when
+  // the payment.capture webhook never arrives. The onSnapshot above
+  // picks up any change automatically.
+  useEffect(() => {
+    const subscription =
+      AppState.addEventListener(
+        "change",
+        (nextState) => {
+          const wasBackground =
+            appState.current === "background" ||
+            appState.current === "inactive";
+
+          appState.current =
+            nextState;
+
+          if (
+            !wasBackground ||
+            nextState !== "active" ||
+            !paymentOpenedRef.current ||
+            !orderId
+          ) {
+            return;
+          }
+
+          paymentOpenedRef.current =
+            false;
+
+          syncOrderPayment(orderId as string)
+            .then((result) => {
+              if (
+                result?.paymentStatus === "paid"
+              ) {
+                showToast(
+                  "GCash payment confirmed."
+                );
+              }
+            })
+            .catch((error) => {
+              console.log(
+                "SYNC PAYMENT ERROR:",
+                error
+              );
+            });
+        }
+      );
+
+    return () => {
+      subscription.remove();
+    };
   }, [orderId]);
 
   // ================= LOAD BUYER =================
@@ -542,6 +604,9 @@ export default function OrderDetails() {
         await Linking.openURL(
           response.redirectUrl
         );
+
+        paymentOpenedRef.current =
+          true;
 
         showToast(
           "Complete your GCash payment. Return to FarmGate after payment."
@@ -1009,6 +1074,31 @@ export default function OrderDetails() {
               }`}
             >
               {(order.paymentStatus || "pending").toUpperCase()}
+            </Text>
+          </View>
+
+          <Text className="text-gray-500 text-sm mb-1">
+            Breakdown
+          </Text>
+
+          <View className="flex-row justify-between mb-1">
+            <Text className="text-gray-600 text-sm">Subtotal</Text>
+            <Text className="text-gray-800 text-sm font-semibold">
+              ₱{Number(order.subTotal ?? 0).toFixed(2)}
+            </Text>
+          </View>
+
+          <View className="flex-row justify-between mb-2">
+            <Text className="text-gray-600 text-sm">
+              Delivery fee
+              {order.delivery === "delivery" &&
+              order.distanceKm !== null &&
+              order.distanceKm !== undefined
+                ? ` (${Number(order.distanceKm).toFixed(1)} km)`
+                : ""}
+            </Text>
+            <Text className="text-gray-800 text-sm font-semibold">
+              ₱{Number(order.deliveryFee || 0).toFixed(2)}
             </Text>
           </View>
 

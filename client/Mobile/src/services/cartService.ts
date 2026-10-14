@@ -16,10 +16,11 @@ import { CartItem } from "../types/cart";
 const cartCollection = collection(db, "cart");
 
 // ================= ADD TO CART =================
-// Kinukuha muna kung may existing item na SAME product AT SAME batch
-// (hindi lang productId) - dahil magkaiba ng presyo ang bawat batch,
-// kaya hindi dapat pagsamahin ang dalawang magkaibang batch sa iisang
-// cart entry kahit parehong product sila.
+// Kinukuha muna kung may existing item na SAME product AT SAME batch AT
+// SAME egg variant (hindi lang productId) - dahil magkaiba ng presyo
+// ang bawat batch, at magkaiba rin ang half tray vs full tray ng itlog,
+// kaya hindi dapat pagsamahin ang magkaibang variant sa iisang cart
+// entry kahit parehong product sila.
 export const addToCart = async (item: CartItem) => {
   try {
     const q = query(
@@ -31,12 +32,27 @@ export const addToCart = async (item: CartItem) => {
 
     const snap = await getDocs(q);
 
-    if (!snap.empty) {
-      const existingDoc = snap.docs[0];
-      const existingQty = existingDoc.data().quantity || 1;
+    const variant = (item as any).eggVariant || null;
 
-      await updateDoc(doc(db, "cart", existingDoc.id), {
+    const match = snap.docs.find(
+      (d) => ((d.data() as any).eggVariant || null) === variant
+    );
+
+    if (match) {
+      const data = match.data() as any;
+      const existingQty = Number(data.quantity) || 1;
+      const existingBase = Number(
+        data.baseQuantity ?? data.quantity
+      );
+
+      const addBase = Number(
+        (item as any).baseQuantity ?? item.quantity
+      );
+
+      await updateDoc(doc(db, "cart", match.id), {
         quantity: existingQty + item.quantity,
+        // Keep base quantity in sync (stock math uses this).
+        baseQuantity: existingBase + addBase,
       });
 
       return;
@@ -69,10 +85,17 @@ export const getCartByBuyer = async (buyerId: string) => {
   }
 };
 
-export const updateCartQuantity = async (docId: string, quantity: number) => {
+export const updateCartQuantity = async (
+  docId: string,
+  quantity: number,
+  baseQuantity?: number
+) => {
   try {
     const ref = doc(db, "cart", docId);
-    await updateDoc(ref, { quantity });
+    await updateDoc(
+      ref,
+      baseQuantity === undefined ? { quantity } : { quantity, baseQuantity }
+    );
   } catch (error) {
     console.log("UPDATE CART ERROR:", error);
     throw error;

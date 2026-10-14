@@ -1,7 +1,6 @@
 import React, { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { sileo } from "sileo";
-import { FiLogOut } from "react-icons/fi";
 import { logoutAdmin } from "../services/authService";
 
 const LogoutModal = ({ closeModal }) => {
@@ -43,11 +42,8 @@ const LogoutModal = ({ closeModal }) => {
         onClick={(e) => e.stopPropagation()}
         className="bg-white w-full max-w-sm rounded-[10px] shadow-2xl p-6 animate-[fadeIn_0.15s_ease-out]"
       >
-        <div className="w-12 h-12 rounded-full bg-[#FDE8E8] flex items-center justify-center mb-4">
-          <FiLogOut size={22} className="text-[#DC2626]" />
-        </div>
-        <h2 className="text-lg font-bold text-gray-900">Logout Account?</h2>
-        <p className="text-sm text-gray-500 mt-2 leading-relaxed">
+        <h2 className="text-lg font-bold text-gray-900 text-center">Logout Account?</h2>
+        <p className="text-sm text-gray-500 mt-2 leading-relaxed text-center">
           Are you sure you want to logout from your admin account?
         </p>
         <div className="flex gap-3 mt-6">

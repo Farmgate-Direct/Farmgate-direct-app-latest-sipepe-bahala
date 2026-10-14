@@ -91,6 +91,8 @@ const ACTION_TITLE = {
   update_profile_name: "Updated profile name",
   update_password: "Changed password",
   export_report: "Downloaded report",
+  update_payout_account: "Updated payout account",
+  admin_withdraw: "Submitted withdrawal",
 };
 
 const ActivityTimeline = ({ items, currentAdminId }) => (
@@ -153,7 +155,9 @@ const ACTIVITY_STYLE = {
   update_profile_name: { icon: <FiEdit size={14} />, bg: "bg-[#eff6ff] text-[#2563EB]" },
   update_password: { icon: <FiLock size={14} />, bg: "bg-[#fef3c7] text-[#D97706]" },
   export_report: { icon: <FiDownload size={14} />, bg: "bg-[#eff6ff] text-[#2563EB]" },
-  // Fallback entries for accounts created before activity logging.
+  update_payout_account: { icon: <FiEdit size={14} />, bg: "bg-[#eff6ff] text-[#2563EB]" },
+  admin_withdraw: { icon: <FiDownload size={14} />, bg: "bg-[#DCFCE7] text-[#14532d]" },
+  // Old accounts without activity logs.
   admin_created: { icon: <FiUserPlus size={14} />, bg: "bg-[#DCFCE7] text-[#14532d]" },
   approved: { icon: <FiUserCheck size={14} />, bg: "bg-[#DCFCE7] text-[#14532d]" },
   banned: { icon: <FiUserX size={14} />, bg: "bg-[#FDE8E8] text-[#DC2626]" },
@@ -578,7 +582,7 @@ const Profile = () => {
             ) : activities.length > 0 ? (
               <>
                 <ActivityTimeline
-                  items={activities.slice(0, 8)}
+                  items={activities.slice(0, 10)}
                   currentAdminId={currentAdmin?.id}
                 />
                 {activities.length > 8 && (

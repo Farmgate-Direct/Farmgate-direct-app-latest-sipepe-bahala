@@ -41,8 +41,7 @@ export const updateLastLogin = async (uid: string) => {
   });
 };
 
-// Only the display name may be edited here; role/status/email are
-// intentionally not writable so privilege fields can't be mass-assigned.
+// Only name can be changed here.
 export const updateAdminProfile = async (uid: string, name: string) => {
   assertUid(uid);
   assertName(name);

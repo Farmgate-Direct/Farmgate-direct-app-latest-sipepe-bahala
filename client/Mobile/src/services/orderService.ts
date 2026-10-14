@@ -67,11 +67,17 @@ const requestBackend = async <T = any>(
     }
 
     if (!response.ok) {
-      throw new Error(
+      const err: any = new Error(
         data?.error ||
           data?.message ||
           `Backend request failed with status ${response.status}.`
       );
+      // Preserve the server error code (e.g. MANUAL_FEE_REQUIRED,
+      // FARM_MISSING_PICKUP, RATE_LIMITED) so checkout can map it
+      // to a friendly message + Try again.
+      if (data?.code) err.code = data.code;
+      err.status = response.status;
+      throw err;
     }
 
     return data as T;
@@ -85,6 +91,29 @@ const requestBackend = async <T = any>(
     clearTimeout(timer);
   }
 };
+
+// ================= PAYMENT SYNC =================
+
+/*
+  Asks the backend for the live Xendit status of this order's GCash
+  payment and fulfills it when Xendit says SUCCEEDED. Heals orders
+  stuck in "pending" when the payment.capture webhook never arrives.
+*/
+export const syncOrderPayment = async (
+  orderId: string
+): Promise<{
+  success: boolean;
+  orderId: string;
+  paymentStatus: string;
+  xenditStatus?: string;
+  alreadyPaid?: boolean;
+  alreadyFulfilled?: boolean;
+  message?: string;
+}> =>
+  requestBackend(
+    `/payment-sync/${encodeURIComponent(orderId)}`,
+    { method: "POST" }
+  );
 
 // ================= ORDER NUMBER =================
 
@@ -103,65 +132,46 @@ const generateOrderNumber = () => {
 // ================= CREATE ORDER =================
 
 export const createOrder = async (order: OrderType) => {
-  try {
-    const orderNumber = order.orderNumber || generateOrderNumber();
+  // Server-side creation: the backend recomputes the delivery fee from the
+  // farmer's stored pickup + the address pin and ignores any client fee.
+  // Informational subtotal/commission below are recomputed by the server at
+  // accept (COD) / payment (GCash). Nothing here is trusted for money.
+  const data = await requestBackend<{
+    success: boolean;
+    orderId: string;
+    orderNumber: string;
+    deliveryFee: number | null;
+    distanceKm: number | null;
+    adjustedDistanceKm: number | null;
+    deliveryTier: string | null;
+    feeStatus: "ok" | null;
+    total: number;
+  }>("/orders", {
+    method: "POST",
+    body: JSON.stringify({
+      farmerId: order.farmerId,
+      farmName: order.farmName,
+      buyerName: order.buyerName,
+      products: order.products,
+      address: order.address,
+      delivery: order.delivery,
+      payment: order.payment,
+      pickupDate: order.pickupDate ?? null,
+      pickupTime: order.pickupTime ?? null,
+      subTotal: order.subTotal,
+    }),
+  });
 
-    const commissionRate = 0.03;
-
-    // Informational only. The backend recomputes the real subtotal, commission
-    // and farmer earning from server prices when the order is accepted (COD)
-    // or paid (GCash). Nothing here is trusted for money.
-    const commissionAmount = Number(
-      (Number(order.subTotal) * commissionRate).toFixed(2)
-    );
-
-    /*
-     * Order lifecycle:
-     *
-     * pending -> farmer accepts -> accepted
-     *   GCash: buyer pays (stock deducted when payment is captured)
-     *   COD  : commission reserve held at acceptance,
-     *          stock deducted when processing starts
-     * processing -> to_receive -> delivered (wallet settled on the backend)
-     *
-     * No stock is deducted at checkout.
-     */
-    const docRef = await addDoc(collection(db, "orders"), {
-      ...order,
-
-      orderNumber,
-
-      status: "pending",
-
-      paymentStatus: order.paymentStatus || "pending",
-
-      inventoryFulfilled: false,
-      fulfillmentStatus: "pending",
-
-      commissionRate,
-      commissionAmount,
-      commissionStatus: "pending",
-
-      farmerEarning: Number(
-        Math.max(0, Number(order.subTotal) - commissionAmount).toFixed(2)
-      ),
-
-      farmerWalletCredited: false,
-      financialStatus: "pending",
-
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-    });
-
-    return {
-      id: docRef.id,
-      orderNumber,
-    };
-  } catch (error) {
-    console.log("ERROR CREATING ORDER:", error);
-
-    throw error;
-  }
+  return {
+    id: data.orderId,
+    orderNumber: data.orderNumber,
+    deliveryFee: data.deliveryFee,
+    distanceKm: data.distanceKm,
+    adjustedDistanceKm: data.adjustedDistanceKm,
+    deliveryTier: data.deliveryTier,
+    feeStatus: data.feeStatus,
+    total: data.total,
+  };
 };
 
 // ================= UPDATE ORDER PRODUCTS =================
@@ -552,17 +562,88 @@ export const declineOrder = async (
   }
 };
 
-// ================= UPDATE ORDER STATUS =================
-// processing / to_receive / delivered are all executed on the backend:
-//  - processing : COD stock is deducted atomically; GCash must be paid + fulfilled
-//  - to_receive : only from processing
-//  - delivered  : financial settlement (idempotent)
+// ================= DELIVERY QUOTE (authoritative, server-computed) =================
+// Never trust client-computed fees. ONE call quotes ALL farms in the cart:
+// the backend reads each farm barangay from users/{farmerId} and computes
+// barangay-centroid distance locally. Buyer barangay comes from the picked
+// address (city + barangay text).
+
+export type BuyerLocation = {
+  city: string;
+  barangay: string;
+  province?: string;
+};
+
+export type QuoteBatchItem = {
+  key: string;
+  farmerId: string;
+  success: boolean;
+  deliveryFee?: number | null;
+  distanceKm?: number | null;
+  adjustedDistanceKm?: number | null;
+  tier?: string | null;
+  feeStatus?: "ok" | null;
+  roadFactor?: number | null;
+  tierVersion?: string | null;
+  method?: string | null;
+  code?: string;
+  error?: string;
+};
+
+export const quoteDeliveries = async (
+  items: { farmerId: string; key?: string }[],
+  buyer: BuyerLocation | null,
+  delivery: "pickup" | "delivery" = "delivery"
+): Promise<QuoteBatchItem[]> => {
+  if (delivery !== "delivery" || items.length === 0) {
+    return [];
+  }
+  const data = await requestBackend<{ success: boolean; quotes: QuoteBatchItem[] }>(
+    "/delivery/quote",
+    {
+      method: "POST",
+      body: JSON.stringify({
+        items,
+        buyerCity: buyer?.city || "",
+        buyerBarangay: buyer?.barangay || "",
+        buyerProvince: buyer?.province || "",
+        delivery,
+      }),
+    }
+  );
+  return Array.isArray(data?.quotes) ? data.quotes : [];
+};
+
+export const quoteDelivery = async (
+  farmerId: string,
+  buyer: BuyerLocation | null,
+  delivery: "pickup" | "delivery" = "delivery"
+): Promise<{ deliveryFee: number; distanceKm: number | null; tier: string | null }> => {
+  if (delivery !== "delivery") {
+    return { deliveryFee: 0, distanceKm: 0, tier: null };
+  }
+  return await requestBackend("/delivery/quote", {
+    method: "POST",
+    body: JSON.stringify({
+      farmerId,
+      buyerCity: buyer?.city || "",
+      buyerBarangay: buyer?.barangay || "",
+      buyerProvince: buyer?.province || "",
+      delivery,
+    }),
+  });
+};
 
 export const updateOrderStatus = async (
   orderId: string,
   farmerId: string,
-  status: "accepted" | "processing" | "to_receive" | "delivered"
+  status: "accepted" | "processing" | "to_receive" | "delivered" | "claimed"
 ) => {
+  // processing / to_receive / delivered / claimed are all executed on the backend:
+  //  - processing : COD stock is deducted atomically; GCash must be paid + fulfilled
+  //  - to_receive : only from processing
+  //  - delivered / claimed : financial settlement (idempotent).
+  //    "claimed" is the pickup equivalent of "delivered" — same settlement endpoint.
   try {
     const encodedId = encodeURIComponent(orderId);
 
@@ -588,9 +669,11 @@ export const updateOrderStatus = async (
       return true;
     }
 
-    if (status === "delivered") {
+    if (status === "delivered" || status === "claimed") {
       // Financial settlement MUST happen on the trusted backend.
       // The backend also makes the delivery + wallet ledger update idempotent.
+      // Pickup ("claimed") and delivery ("delivered") share the same settlement;
+      // the backend stores "claimed" for pickup orders, "delivered" otherwise.
       return await requestBackend(`/wallet/orders/${encodedId}/deliver`, {
         method: "POST",
         body: JSON.stringify({}),

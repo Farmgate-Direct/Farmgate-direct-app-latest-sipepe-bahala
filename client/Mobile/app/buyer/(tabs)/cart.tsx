@@ -28,6 +28,29 @@ import {
 
 import { CartItem } from "@/src/types/cart";
 
+import {
+  eggVariantToBaseQuantity,
+  baseStockToVariantStock,
+  normalizeEggVariant,
+  eggVariantLabel,
+} from "@/constants/productCatalog";
+
+// Base-unit equivalent ng cart item (stock math). Kapag walang variant,
+// quantity mismo ang base.
+const baseQtyOf = (p: any): number => {
+  const v = normalizeEggVariant(p?.eggVariant);
+  if (!v) return Number(p?.quantity || 0);
+  return eggVariantToBaseQuantity(v, Number(p?.quantity || 0), p?.baseUnit || p?.unit || "");
+};
+
+// Max na pwedeng i-plus sa variant terms (converted mula sa base stock).
+const maxQtyOf = (p: any, baseStock: number | null): number => {
+  if (typeof baseStock !== "number") return Number(p?.quantity || 0);
+  const v = normalizeEggVariant(p?.eggVariant);
+  if (!v) return Math.floor(baseStock);
+  return baseStockToVariantStock(baseStock, p?.baseUnit || p?.unit || "", v);
+};
+
 export default function Cart() {
   const router = useRouter();
   const { showToast } = useToast();
@@ -184,17 +207,25 @@ export default function Cart() {
     return;
   }
 
-  if (product.quantity >= availableStock) {
-    showToast(`Only ${availableStock} ${product.unit?.replace(/^per\s+/i, "")} available`);
+  const maxQty = maxQtyOf(product, availableStock);
+
+  if (product.quantity >= maxQty) {
+    const v = normalizeEggVariant((product as any).eggVariant);
+    showToast(
+      v
+        ? `Only ${maxQty}x ${eggVariantLabel(v)} available`
+        : `Only ${availableStock} ${product.unit?.replace(/^per\s+/i, "")} available`
+    );
     return;
   }
 
   const newQty = product.quantity + 1;
+  const newBase = baseQtyOf({ ...product, quantity: newQty } as any);
 
   updateLocalQty(farmerId, docId, newQty);
 
   try {
-    await updateCartQuantity(product.docId, newQty);
+    await updateCartQuantity(product.docId, newQty, newBase);
   } catch {
     updateLocalQty(farmerId, docId, product.quantity);
     Alert.alert("Error updating quantity");
@@ -219,11 +250,12 @@ export default function Cart() {
     if (product.quantity <= 1) return;
 
     const newQty = product.quantity - 1;
+    const newBase = baseQtyOf({ ...product, quantity: newQty } as any);
 
     updateLocalQty(farmerId, docId, newQty);
 
     try {
-      await updateCartQuantity(product.docId, newQty);
+      await updateCartQuantity(product.docId, newQty, newBase);
     } catch {
       updateLocalQty(
         farmerId,
@@ -311,11 +343,15 @@ export default function Cart() {
         throw new Error(`Product ID is missing for ${product.name || "a selected item"}.`);
       }
 
+      // Stock math ay laging base units (half tray = 0.5 tray).
+      const need = baseQtyOf(product as any);
+      const baseUnit = (product as any).baseUnit || product.unit || "unit";
+
       const current = requestedMap.get(productId);
       requestedMap.set(productId, {
-        quantity: (current?.quantity || 0) + Number(product.quantity || 0),
+        quantity: (current?.quantity || 0) + need,
         name: current?.name || product.name || "Product",
-        unit: current?.unit || product.unit || "unit",
+        unit: current?.unit || baseUnit,
       });
     });
 
@@ -564,6 +600,12 @@ ${message}`
                         ₱{p.price.toFixed(2)}
                       </Text>
 
+                      {(p as any).eggVariant ? (
+                        <Text className="text-green-900 text-xs mt-0.5 font-semibold">
+                          {eggVariantLabel((p as any).eggVariant)}
+                        </Text>
+                      ) : null}
+
                       <Text className="text-gray-500 text-xs mt-0.5">
                         Total: {p.quantity} {p.unit?.replace(/^per\s+/i, "")}
                       </Text>
@@ -601,11 +643,11 @@ ${message}`
 
                     <TouchableOpacity
                       onPress={() => incrementQty(farm.farmerId, p.docId!)}
-                      disabled={typeof stockMap[p.productId] !== "number" || p.quantity >= Number(stockMap[p.productId])}
+                      disabled={typeof stockMap[p.productId] !== "number" || p.quantity >= maxQtyOf(p as any, stockMap[p.productId] as number)}
                       className="w-7 h-7 rounded-[5px] items-center justify-center"
                       style={{
                         backgroundColor:
-                          typeof stockMap[p.productId] !== "number" || p.quantity >= Number(stockMap[p.productId])
+                          typeof stockMap[p.productId] !== "number" || p.quantity >= maxQtyOf(p as any, stockMap[p.productId] as number)
                             ? "#9ca3af"
                             : "#14532d",
                       }}

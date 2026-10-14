@@ -33,6 +33,10 @@ import {
   toCanonicalKey,
   getUnitsForProduct,
   isEggProduct,
+  isHalfTrayUnit,
+  isFullTrayUnit,
+  EGG_HALF_PCS,
+  EGG_FULL_PCS,
 } from "../../../constants/productCatalog";
 
 // DA reference na naka-sync mula sa Firestore (scripts-automation/da-sync
@@ -223,7 +227,7 @@ const AddProductModal = ({
       setDaPriceRaw(null);
       setEggCalcPc("");
       // Reset unit sa default ng bagong category (per kg,
-      // o half tray kapag Egg & Poultry).
+      // o per tray kapag Egg & Poultry — fixed, hindi pinapapili).
       setUnit(getUnitsForProduct(category)[0] ?? "per kg");
     }
   }, [category]);
@@ -297,8 +301,8 @@ const AddProductModal = ({
         setNotice("");
         setCurrentBatch(null);
         // Bagong product - i-reset ang mga field para malinis magsimula.
-        // Unit ay depende sa category: Egg & Poultry -> half tray/per tray,
-        // iba pa -> per kg (tanggal na ang per pcs).
+        // Unit ay fixed: Egg & Poultry -> per tray (buyer na ang pipili
+        // ng half/full), iba pa -> per kg.
         setUnit(getUnitsForProduct(category, name)[0] ?? "per kg");
         setDescription("");
         setImages([]);
@@ -460,17 +464,12 @@ const AddProductModal = ({
         }
       : null;
 
-  // Ilipat ang calculator result sa PRICE + UNIT (bagong produkto lang;
-  // kapag existing na produkto ay naka-lock ang unit kaya price manual).
-  const applyEggCalc = (which: "half" | "full") => {
+  // Ilipat ang calculator result sa PRICE (per tray fixed na ang UNIT
+  // sa Egg & Poultry, kaya full-tray presyo lang ang sine-set).
+  const applyEggCalc = () => {
     if (!eggCalcResult || isExistingProduct) return;
-    if (which === "half") {
-      setPrice(String(eggCalcResult.halfTray));
-      setUnit("half tray");
-    } else {
-      setPrice(String(eggCalcResult.fullTray));
-      setUnit("per tray");
-    }
+    setPrice(String(eggCalcResult.fullTray));
+    setUnit("per tray");
   };
 
   const isFormValid =
@@ -688,15 +687,23 @@ const AddProductModal = ({
               </View>
             )}
 
-            {/* UNIT - editable lang kapag bagong product.
-                per pcs at per kg tinanggal na sa Egg & Poultry;
-                half tray / per tray lang. */}
-            {isExistingProduct ? (
+            {/* UNIT - laging naka-lock, hindi na pinapapili si farmer.
+                Egg & Poultry (bagong produkto): fixed sa "per tray" —
+                si buyer na ang pipili ng half tray (15 pcs) o full tray
+                (30 pcs). Existing na produkto: unit ng master listing. */}
+            {isExistingProduct || category === "Egg & Poultry" ? (
               <View className="mb-4">
                 <Text className="text-xs text-gray-500 mb-1">UNIT</Text>
                 <View className="rounded-[10px] border border-gray-200 bg-gray-100 px-4 py-3">
                   <Text className="text-gray-500">{unit}</Text>
                 </View>
+                {category === "Egg & Poultry" && !isExistingProduct && (
+                  <Text className="text-gray-400 text-[10px] mt-1">
+                    Ilista mo ang presyo at bilang kada full tray (30 pcs).
+                    Si buyer na ang pipili sa shop kung half tray (15 pcs)
+                    o full tray — automatic ang presyo (half = kalahati).
+                  </Text>
+                )}
               </View>
             ) : (
               <Dropdown
@@ -707,8 +714,11 @@ const AddProductModal = ({
               />
             )}
 
-            {/* PRICE - laging editable */}
-            <Text className="text-xs text-gray-500 mb-1">PRICE (₱)</Text>
+            {/* PRICE - laging editable, laging may unit para malinaw
+                kung kada ano ang presyo (kada full tray, kilo, atbp.) */}
+            <Text className="text-xs text-gray-500 mb-1">
+              PRICE (₱ per {unit.replace(/^per\s+/i, "")})
+            </Text>
             <TextInput
               value={price}
               onChangeText={handlePriceChange}
@@ -722,7 +732,7 @@ const AddProductModal = ({
             {eggFarmerHelper && (
               <View className="mb-2 rounded-[10px] border border-green-200 bg-green-50 px-4 py-3">
                 <Text className="text-green-800 text-xs font-semibold mb-1">
-                  Kwenta sa presyo mo (₱{Number(price).toLocaleString()} per {unit}):
+                  Kwenta sa presyo mo (₱{Number(price).toLocaleString()} per {unit.replace(/^per\s+/i, "")}):
                 </Text>
                 <Text className="text-green-800 text-xs">
                   • Bawat itlog: ₱{formatEggPeso(eggFarmerHelper.perPc)}{"\n"}• Half tray (15 eggs): ₱{formatEggPeso(eggFarmerHelper.halfTray)}{"\n"}• Full tray (30 eggs): ₱{formatEggPeso(eggFarmerHelper.fullTray)}
@@ -756,21 +766,13 @@ const AddProductModal = ({
                       • Half tray (15 eggs): ₱{Number(eggCalcResult.halfTray).toLocaleString()}{"\n"}• Full tray (30 eggs): ₱{Number(eggCalcResult.fullTray).toLocaleString()}
                     </Text>
                     {!isExistingProduct && (
-                      <View className="flex-row gap-2 mt-2">
+                      <View className="mt-2">
                         <TouchableOpacity
-                          onPress={() => applyEggCalc("half")}
-                          className="flex-1 items-center rounded-[5px] bg-[#14532d] py-3"
+                          onPress={applyEggCalc}
+                          className="items-center rounded-[5px] bg-[#14532d] py-3"
                         >
                           <Text className="text-white text-xs font-semibold">
-                            Gamitin: Half tray
-                          </Text>
-                        </TouchableOpacity>
-                        <TouchableOpacity
-                          onPress={() => applyEggCalc("full")}
-                          className="flex-1 items-center rounded-[5px] bg-[#14532d] py-3"
-                        >
-                          <Text className="text-white text-xs font-semibold">
-                            Gamitin: Full tray
+                            Gamitin: ₱{Number(eggCalcResult.fullTray).toLocaleString()} per tray
                           </Text>
                         </TouchableOpacity>
                       </View>
@@ -846,17 +848,41 @@ const AddProductModal = ({
               </View>
             )}
 
-            {/* QUANTITY (harvest) */}
+            {/* QUANTITY (harvest) — direktang tanong para hindi nakakalito:
+                full tray man o half tray, malinaw kung ano ang bibilangin.
+                Kapag itlog, pinapakita rin ang kabuuang piraso. */}
             <Text className="text-xs text-gray-500 mb-1">
               HARVEST QUANTITY (dami ng inani ngayon)
+            </Text>
+            <Text className="text-gray-400 text-[11px] mb-1">
+              {isEggProduct(name) && isFullTrayUnit(unit)
+                ? "Ilang full tray (30 pcs bawat isa) ang inani mo?"
+                : isEggProduct(name) && isHalfTrayUnit(unit)
+                  ? "Ilang half tray (15 pcs bawat isa) ang inani mo?"
+                  : `Ilang ${unit.replace(/^per\s+/i, "")} ang inani mo?`}
             </Text>
             <TextInput
               value={quantity}
               onChangeText={handleQuantityChange}
               keyboardType="numeric"
-              placeholder="Enter quantity"
-              className="mb-4 rounded-[10px] border border-gray-300 bg-gray-100 px-4 py-3 text-gray-800"
+              placeholder="Hal. 50"
+              className="mb-1 rounded-[10px] border border-gray-300 bg-gray-100 px-4 py-3 text-gray-800"
             />
+            {isEggProduct(name) &&
+            (isHalfTrayUnit(unit) || isFullTrayUnit(unit)) &&
+            quantity !== "" &&
+            Number(quantity) > 0 ? (
+              <Text className="text-green-700 text-xs mb-4 mt-1">
+                Kabuuang itlog:{" "}
+                {(
+                  Number(quantity) *
+                  (isHalfTrayUnit(unit) ? EGG_HALF_PCS : EGG_FULL_PCS)
+                ).toLocaleString()}{" "}
+                pcs
+              </Text>
+            ) : (
+              <View className="mb-3" />
+            )}
 
             {/* DESCRIPTION - editable lang kapag bagong product */}
             <Text className="text-xs text-gray-500 mb-1">DESCRIPTION</Text>

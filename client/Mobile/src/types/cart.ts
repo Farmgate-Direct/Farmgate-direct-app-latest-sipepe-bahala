@@ -16,6 +16,8 @@
 
   createdAt: number;
 };*/
+export type EggVariant = "half" | "full";
+
 export type CartItem = {
   docId?: string;
   productId: string;
@@ -30,5 +32,11 @@ export type CartItem = {
   price: number;
   quantity: number;
   unit: string;
+  // Egg half/full tray variant (buyer's choice). quantity/unit/price
+  // are stored in VARIANT terms (what the buyer sees); baseUnit /
+  // baseQuantity carry the farmer-listing terms for stock math.
+  eggVariant?: EggVariant | null;
+  baseUnit?: string;
+  baseQuantity?: number;
   createdAt: number;
 };

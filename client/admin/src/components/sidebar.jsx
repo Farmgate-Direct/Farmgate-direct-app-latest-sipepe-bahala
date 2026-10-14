@@ -6,17 +6,16 @@ import {
   FaShoppingCart,
   FaUserCog,
   FaSignOutAlt,
-  FaBars,
   FaTimes,
+  FaWallet,
 } from "react-icons/fa";
 import { TbLayoutDashboardFilled } from "react-icons/tb";
 import { BiSolidReport } from "react-icons/bi";
 import logo from "../assets/images/farmgate-logo.png";
 import LogoutModal from "../pages/logout";
 
-const Sidebar = () => {
+const Sidebar = ({ isOpen = false, onClose = () => {} }) => {
   const [showLogout, setShowLogout] = useState(false);
-  const [isOpen, setIsOpen] = useState(false);
 
   useEffect(() => {
     if (isOpen) {
@@ -39,18 +38,10 @@ const Sidebar = () => {
         : "text-[#dcfce7] font-medium hover:bg-white/10 hover:text-white"
     }`;
 
-  const closeDrawer = () => setIsOpen(false);
+  const closeDrawer = () => onClose();
 
   return (
     <>
-      <button
-        onClick={() => setIsOpen(true)}
-        className="lg:hidden fixed top-4 left-4 z-30 text-white p-3 rounded-[10px] shadow-sm hover:opacity-90 transition active:opacity-85"
-        style={{ backgroundColor: "#14532d" }}
-        aria-label="Open menu"
-      >
-        <FaBars size={18} />
-      </button>
       {isOpen && (
         <div
           onClick={closeDrawer}
@@ -104,6 +95,10 @@ const Sidebar = () => {
           <NavLink to="/reports" className={menuClass} onClick={closeDrawer}>
             <BiSolidReport size={20} />
             <span>Reports</span>
+          </NavLink>
+          <NavLink to="/wallet" className={menuClass} onClick={closeDrawer}>
+            <FaWallet size={19} />
+            <span>Wallet</span>
           </NavLink>
           <div className="border-t border-white/10 my-2"></div>
           <p className="px-2 mb-1 text-[11px] font-semibold tracking-[1.5px] text-green-100/60 uppercase">

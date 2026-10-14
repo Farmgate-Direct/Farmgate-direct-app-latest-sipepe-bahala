@@ -15,7 +15,10 @@ import {
 } from "react-native";
 import * as ImagePicker from "expo-image-picker";
 import { ProductType } from "../../../src/types/product";
-import { ProductCategoryKey } from "../../../constants/productCatalog";
+import {
+  ProductCategoryKey,
+  getUnitsForProduct,
+} from "../../../constants/productCatalog";
 import {
   getProductVideoValidationError,
   MAX_PRODUCT_IMAGES,
@@ -36,12 +39,14 @@ type DropdownProps = {
   onSelect: (value: string) => void;
 };
 
+// Unit options — pareho sa Add Product (shared helper):
+// Egg & Poultry -> half tray / per tray lang (walang per pcs, walang per kg).
+// Lahat ng ibang category -> per kg lang.
 const getUnits = (product: ProductType) =>
-  /egg|itlog/i.test(product.name)
-    ? ["per tray", "per pcs", "per kg"]
-    : product.category === "Egg & Poultry"
-      ? ["per pcs", "per kg"]
-      : ["per kg", "per pcs"];
+  getUnitsForProduct(
+    (product.category as ProductCategoryKey) || "Vegetables",
+    product.name
+  );
 
 const Dropdown = ({ label, value, options, onSelect }: DropdownProps) => {
   const [open, setOpen] = useState(false);

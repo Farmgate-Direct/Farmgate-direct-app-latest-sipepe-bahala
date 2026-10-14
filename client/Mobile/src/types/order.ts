@@ -11,6 +11,12 @@ export type OrderProduct = {
   price: number;
   quantity: number;
   unit: string;
+  // Egg half/full tray variant (buyer's choice). price/quantity/unit
+  // are in variant terms; baseQuantity is the farmer-listing-unit
+  // equivalent used by the backend for stock deduction.
+  eggVariant?: "half" | "full" | null;
+  baseUnit?: string;
+  baseQuantity?: number;
   reviewed?: boolean;
 };
 
@@ -22,6 +28,10 @@ export type OrderAddress = {
   city: string;
   province: string;
   phone: string;
+  // Buyer map pin (OSM picker, Bulacan bbox only). Text fields above are
+  // kept for the courier only and are never geocoded.
+  lat?: number | null;
+  lng?: number | null;
 };
 
 export type OrderStatus =
@@ -30,6 +40,7 @@ export type OrderStatus =
   | "processing"
   | "to_receive"
   | "delivered"
+  | "claimed"
   | "cancelled";
 
 export type PaymentMethod = "gcash" | "cod";
@@ -67,6 +78,13 @@ export type OrderType = {
   pickupTime?: string | null;
   subTotal: number;
   deliveryFee: number;
+  distanceKm?: number | null;
+  adjustedDistanceKm?: number | null;
+  deliveryTier?: string | null;
+  feeStatus?: "ok" | null;
+  roadFactor?: number | null;
+  tierVersion?: string | null;
+  deliveryMethod?: string | null;
   total: number;
   status: OrderStatus;
 

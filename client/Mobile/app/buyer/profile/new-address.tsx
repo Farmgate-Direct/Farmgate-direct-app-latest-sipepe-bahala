@@ -27,8 +27,18 @@ import {
 
 import { useToast } from "../../../context/ToastContext";
 
-const PSGC_BASE =
-  "https://psgc.gitlab.io/api";
+import { sanitizePhoneInput } from "../../../utils/validators";
+
+import {
+  BULACAN_PROVINCE,
+  BULACAN_CITIES,
+  barangaysForCity,
+  postalCodeForCity,
+} from "@/constants/bulacanBarangays";
+
+// Province is locked to Bulacan. City then Barangay dropdowns come from the
+// local dataset so names match the backend exactly (exact match only, no fuzzy).
+const LOCKED_REGION = "Central Luzon (Region III)";
 
 const NewAddress = () => {
 
@@ -40,41 +50,55 @@ const NewAddress = () => {
   const [loading, setLoading] =
     useState(false);
 
-  const [locationLoading, setLocationLoading] =
-    useState(true);
+  // Local dataset loads synchronously; no network wait.
+  const locationLoading = false;
 
   // ================= USER INPUT =================
 
   const [fullName, setFullName] =
     useState("");
 
+  // Phone: 10 digits lang pagkatapos ng +63 (tulad sa register).
   const [phone, setPhone] =
     useState("");
 
   const [street, setStreet] =
     useState("");
 
-  const [postalCode, setPostalCode] =
-    useState("");
+  // Prefill ang pangalan at number mula sa registered account,
+  // para hindi na i-type muli ng buyer.
+  useEffect(() => {
+    (async () => {
+      try {
+        const userStr =
+          await AsyncStorage.getItem("user");
+        if (!userStr) return;
+        const stored = JSON.parse(userStr);
+        if (!fullName && stored?.fullName) {
+          setFullName(String(stored.fullName));
+        }
+        if (stored?.phone) {
+          setPhone(sanitizePhoneInput(String(stored.phone)));
+        }
+      } catch {
+        // Hayaan lang na blank kung walang session.
+      }
+    })();
+    // Isang beses lang sa mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const [isDefault, setIsDefault] =
     useState(false);
 
-  // ================= FIXED LOCATION =================
+  // ================= FIXED LOCATION (Bulacan locked) =================
 
-  const [selectedRegion, setSelectedRegion] =
-    useState<any>(null);
+  const selectedRegion = { name: LOCKED_REGION };
+  const selectedProvince = { name: BULACAN_PROVINCE };
 
-  const [selectedProvince, setSelectedProvince] =
-    useState<any>(null);
+  // ================= DROPDOWNS (local dataset) =================
 
-  // ================= DROPDOWNS =================
-
-  const [cities, setCities] =
-    useState<any[]>([]);
-
-  const [barangays, setBarangays] =
-    useState<any[]>([]);
+  const cities = BULACAN_CITIES.map((name) => ({ name, code: name }));
 
   const [selectedCity, setSelectedCity] =
     useState<any>(null);
@@ -82,215 +106,14 @@ const NewAddress = () => {
   const [selectedBarangay, setSelectedBarangay] =
     useState<any>(null);
 
-  // ================= LOAD FIXED LOCATION =================
+  const barangays = selectedCity
+    ? barangaysForCity(selectedCity.name).map((name) => ({ name, code: name }))
+    : [];
 
-  useEffect(() => {
-
-    loadFixedLocation();
-
-  }, []);
-
-  // ================= FIND CENTRAL LUZON + BULACAN =================
-
-  const loadFixedLocation =
-    async () => {
-
-      try {
-
-        setLocationLoading(true);
-
-        // ==========================================
-        // STEP 1: GET ALL REGIONS
-        // ==========================================
-
-        const regionResponse =
-          await fetch(
-            `${PSGC_BASE}/regions`);
-
-        if (!regionResponse.ok) {
-
-          throw new Error(
-            "Failed to fetch regions"
-          );
-        }
-
-        const regions =
-          await regionResponse.json();
-
-        // ==========================================
-        // FIND CENTRAL LUZON
-        // ==========================================
-
-        const centralLuzon =
-          regions.find(
-            (region: any) =>
-              region.name
-                ?.trim()
-                .toLowerCase() ===
-              "central luzon"
-          );
-
-        if (!centralLuzon) {
-
-          throw new Error(
-            "Central Luzon not found"
-          );
-        }
-
-        setSelectedRegion(
-          centralLuzon
-        );
-
-        console.log(
-          "Central Luzon:",
-          centralLuzon
-        );
-
-        // ==========================================
-        // STEP 2: GET PROVINCES UNDER CENTRAL LUZON
-        // ==========================================
-
-        const provinceResponse =
-          await fetch(
-            `${PSGC_BASE}/regions/${centralLuzon.code}/provinces`
-          );
-
-        if (!provinceResponse.ok) {
-
-          throw new Error(
-            "Failed to fetch provinces"
-          );
-        }
-
-        const provinces =
-          await provinceResponse.json();
-
-        // ==========================================
-        // FIND BULACAN
-        // ==========================================
-
-        const bulacan =
-          provinces.find(
-            (province: any) =>
-              province.name
-                ?.trim()
-                .toLowerCase() ===
-              "bulacan"
-          );
-
-        if (!bulacan) {
-
-          throw new Error(
-            "Bulacan not found"
-          );
-        }
-
-        setSelectedProvince(
-          bulacan
-        );
-
-        console.log(
-          "Bulacan:",
-          bulacan
-        );
-
-        // ==========================================
-        // STEP 3: LOAD BULACAN CITIES
-        // ==========================================
-
-        await loadCities(
-          bulacan.code
-        );
-
-      } catch (error) {
-
-        console.log(
-          "Location loading error:",
-          error
-        );
-
-        showToast("Failed to load Bulacan locations. Please try again.");
-
-      } finally {
-
-        setLocationLoading(false);
-
-      }
-    };
-
-  // ================= LOAD CITIES =================
-
-  const loadCities =
-    async (
-      provinceCode: string
-    ) => {
-
-      try {
-
-        const response =
-          await fetch(
-            `${PSGC_BASE}/provinces/${provinceCode}/cities-municipalities`
-          );
-
-        if (!response.ok) {
-
-          throw new Error(
-            "Failed to fetch cities"
-          );
-        }
-
-        const data =
-          await response.json();
-
-        setCities(data);
-
-      } catch (error) {
-
-        console.log(
-          "City loading error:",
-          error
-        );
-
-        showToast("Failed to load cities/municipalities");
-      }
-    };
-
-  // ================= LOAD BARANGAYS =================
-
-  const loadBarangays =
-    async (
-      cityCode: string
-    ) => {
-
-      try {
-
-        const response =
-          await fetch(
-            `${PSGC_BASE}/cities-municipalities/${cityCode}/barangays`
-          );
-
-        if (!response.ok) {
-
-          throw new Error(
-            "Failed to fetch barangays"
-          );
-        }
-
-        const data =
-          await response.json();
-
-        setBarangays(data);
-
-      } catch (error) {
-
-        console.log(
-          "Barangay loading error:",
-          error
-        );
-
-        showToast("Failed to load barangays");
-      }
-    };
+  // Postal code is auto-derived from city — no manual input.
+  const autoPostalCode = selectedCity
+    ? postalCodeForCity(selectedCity.name)
+    : "";
 
   // ================= PHONE VALIDATION =================
 
@@ -302,6 +125,9 @@ const NewAddress = () => {
 
       return regex.test(number);
     };
+
+  // Buong 11-digit local number (09XXXXXXXXX) mula sa 10-digit input.
+  const fullPhoneNumber = `0${phone}`;
 
   // ================= SUBMIT =================
 
@@ -347,12 +173,17 @@ const NewAddress = () => {
 
         if (
           !validatePhone(
-            phone.trim()
+            fullPhoneNumber
           )
         ) {
 
           showToast("Enter a valid Philippine mobile number.");
 
+          return;
+        }
+
+        if (!autoPostalCode) {
+          showToast("Please select a valid city / municipality.");
           return;
         }
 
@@ -394,10 +225,10 @@ const NewAddress = () => {
             fullName.trim(),
 
           phone:
-            phone.trim(),
+            fullPhoneNumber,
 
           // ========================================
-          // AUTOMATICALLY FROM PSGC
+          // LOCKED TO BULACAN (local dataset)
           // ========================================
 
           region:
@@ -417,7 +248,7 @@ const NewAddress = () => {
             selectedBarangay.name,
 
           postalCode:
-            postalCode.trim(),
+            autoPostalCode,
 
           street:
             street.trim(),
@@ -539,16 +370,22 @@ const NewAddress = () => {
         className="bg-gray-100 rounded-[5px] px-4 py-4 mb-4"
       />
 
-      {/* ================= PHONE ================= */}
+      {/* ================= PHONE (same design as register: +63 + 10 digits) ================= */}
       <Text className="text-gray-500 text-xs mb-1 ml-1">Phone Number</Text>
-      <TextInput
-        placeholder="09XXXXXXXXX"
-        value={phone}
-        onChangeText={setPhone}
-        keyboardType="phone-pad"
-        maxLength={13}
-        className="bg-gray-100 rounded-[5px] px-4 py-4 mb-4"
-      />
+      <View className="flex-row items-center bg-gray-100 rounded-[5px] mb-4 overflow-hidden">
+        <View className="px-4 self-stretch justify-center border-r border-gray-200">
+          <Text className="text-gray-700 font-semibold">+63</Text>
+        </View>
+        <TextInput
+          placeholder="9XX XXX XXXX"
+          placeholderTextColor="#9ca3af"
+          value={phone}
+          onChangeText={(value) => setPhone(sanitizePhoneInput(value))}
+          keyboardType="phone-pad"
+          maxLength={10}
+          className="flex-1 px-4 py-4 text-gray-800"
+        />
+      </View>
 
       {/* ================= REGION ================= */}
       <Text className="text-gray-500 text-xs mb-1 ml-1">Region</Text>
@@ -587,9 +424,6 @@ const NewAddress = () => {
         onChange={(item) => {
           setSelectedCity(item);
           setSelectedBarangay(null);
-          setBarangays([]);
-          setPostalCode(item.zipCode || item.zip_code || "");
-          loadBarangays(item.code);
         }}
       />
 
@@ -618,16 +452,16 @@ const NewAddress = () => {
         }}
       />
 
-      {/* ================= POSTAL CODE ================= */}
+      {/* ================= POSTAL CODE (auto) ================= */}
       <Text className="text-gray-500 text-xs mb-1 ml-1">Postal Code</Text>
-      <TextInput
-        placeholder="Postal Code"
-        value={postalCode}
-        onChangeText={setPostalCode}
-        keyboardType="numeric"
-        maxLength={4}
-        className="bg-gray-100 rounded-[5px] px-4 py-4 mb-4"
-      />
+      <View className="bg-gray-100 rounded-[5px] px-4 py-4 mb-1">
+        <Text className={`text-base ${autoPostalCode ? "text-gray-800 font-medium" : "text-gray-400"}`}>
+          {autoPostalCode || "Select city first"}
+        </Text>
+      </View>
+      <Text className="text-gray-400 text-[11px] mb-4 ml-1">
+        Automatic based on city / municipality
+      </Text>
 
       {/* ================= STREET ================= */}
       <Text className="text-gray-500 text-xs mb-1 ml-1">House No. / Street</Text>

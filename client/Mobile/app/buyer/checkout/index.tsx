@@ -38,11 +38,22 @@ import { useAppAlert } from "@/context/FarmerAlertContext";
 
 import {
   createOrder,
+  quoteDeliveries,
 } from "@/src/services/orderService";
+
+import {
+  deliveryErrorMessage,
+  formatKm,
+} from "@/utils/deliveryFee";
 
 import {
   removeCartItem,
 } from "@/src/services/cartService";
+
+import {
+  normalizeEggVariant,
+  eggVariantToBaseQuantity,
+} from "@/constants/productCatalog";
 
 // ========================================================
 // CONSTANTS
@@ -376,7 +387,142 @@ export default function Checkout() {
     };
 
   // ======================================================
-  // TOTAL
+  // DELIVERY QUOTES (authoritative server preview, all farms, one call)
+  // The client preview is never trusted: the server recomputes the fee in
+  // POST /orders, /accept (COD) and /create-payment (GCash) from
+  // city + barangay. The buyer location comes from the picked address text.
+  // ======================================================
+
+  type FarmQuote =
+    | { status: "idle" }
+    | { status: "loading" }
+    | { status: "ok"; deliveryFee: number; distanceKm: number | null; adjustedDistanceKm: number | null; tier: string | null; feeStatus: "ok"; method?: string | null }
+    | { status: "error"; message: string; code?: string };
+
+  const [quotes, setQuotes] = useState<Record<string, FarmQuote>>({});
+  const [quoteAttempt, setQuoteAttempt] = useState(0);
+
+  const activeFarms = cart.filter(
+    (farm: any) => Array.isArray(farm?.products) && farm.products.length > 0
+  );
+
+  const buyerLocation =
+    address && String(address.city || "").trim() && String(address.barangay || "").trim()
+      ? {
+          city: String(address.city),
+          barangay: String(address.barangay),
+          province: String(address.province || "Bulacan"),
+        }
+      : null;
+
+  useEffect(() => {
+    let cancelled = false;
+    const run = async () => {
+      if (delivery !== "delivery" || !address || activeFarms.length === 0) {
+        setQuotes({});
+        return;
+      }
+      if (!buyerLocation) {
+        const blocked: Record<string, FarmQuote> = {};
+        for (const farm of activeFarms) {
+          if (farm?.farmerId) {
+            blocked[String(farm.farmerId)] = {
+              status: "error",
+              code: "ADDRESS_MISSING_BARANGAY",
+              message: deliveryErrorMessage("ADDRESS_MISSING_BARANGAY"),
+            };
+          }
+        }
+        setQuotes(blocked);
+        return;
+      }
+      const loading: Record<string, FarmQuote> = {};
+      for (const farm of activeFarms) {
+        if (farm?.farmerId) loading[String(farm.farmerId)] = { status: "loading" };
+      }
+      setQuotes(loading);
+      try {
+        // ONE endpoint call for the whole cart; the server resolves all
+        // farm barangays in one pass.
+        const results = await quoteDeliveries(
+          activeFarms
+            .filter((farm: any) => farm?.farmerId)
+            .map((farm: any) => ({ farmerId: String(farm.farmerId), key: String(farm.farmerId) })),
+          buyerLocation,
+          "delivery"
+        );
+        if (cancelled) return;
+        const next: Record<string, FarmQuote> = {};
+        for (const r of results) {
+          if (!r?.success) {
+            next[String(r.key)] = {
+              status: "error",
+              message: deliveryErrorMessage(r.code, r.error),
+              code: r.code,
+            };
+          } else {
+            next[String(r.key)] = {
+              status: "ok",
+              deliveryFee: Number(r.deliveryFee) || 0,
+              distanceKm: r.distanceKm ?? null,
+              adjustedDistanceKm: r.adjustedDistanceKm ?? null,
+              tier: r.tier ?? null,
+              feeStatus: "ok",
+              method: r.method ?? null,
+            };
+          }
+        }
+        // Any farm missing from the response is an error (never silently free).
+        for (const farm of activeFarms) {
+          const fid = String(farm?.farmerId || "");
+          if (fid && !next[fid]) {
+            next[fid] = { status: "error", message: deliveryErrorMessage(undefined, "Missing quote for this farm.") };
+          }
+        }
+        setQuotes(next);
+      } catch (e: any) {
+        if (cancelled) return;
+        const msg = String(e?.message || "Delivery is not available for this address.");
+        const failed: Record<string, FarmQuote> = {};
+        for (const farm of activeFarms) {
+          if (farm?.farmerId) {
+            failed[String(farm.farmerId)] = {
+              status: "error",
+              message: deliveryErrorMessage(e?.code, msg),
+              code: e?.code,
+            };
+          }
+        }
+        setQuotes(failed);
+      }
+    };
+    run();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [delivery, address?.id, address?.city, address?.barangay, items, quoteAttempt]);
+
+  const quoting = Object.values(quotes).some((q) => q.status === "loading");
+  const quoteErrors = activeFarms
+    .map((farm: any) => ({
+      farm,
+      quote: quotes[String(farm?.farmerId || "")],
+    }))
+    .filter(({ quote }) => quote?.status === "error");
+
+  const feeForFarm = (farmerId: string): number => {
+    const q = quotes[String(farmerId || "")];
+    return q?.status === "ok" ? Number(q.deliveryFee) || 0 : 0;
+  };
+
+  const kmForFarm = (farmerId: string): number | null => {
+    const q = quotes[String(farmerId || "")];
+    return q?.status === "ok" ? (q.distanceKm ?? null) : null;
+  };
+
+  // ======================================================
+  // TOTAL (sum of per-farm server-quoted fees)
   // ======================================================
 
   const subTotal =
@@ -406,21 +552,18 @@ export default function Checkout() {
       0
     );
 
-  const activeFarmCount =
-    cart.filter(
-      (farm) =>
-        Array.isArray(farm?.products) &&
-        farm.products.length > 0
-    ).length;
-
   const deliveryFee =
     delivery === "delivery"
-      ? activeFarmCount * 35
+      ? activeFarms.reduce((sum: number, farm: any) => sum + feeForFarm(farm?.farmerId), 0)
       : 0;
 
   const total =
     subTotal +
     deliveryFee;
+
+  const placeOrderBlocked =
+    loading ||
+    (delivery === "delivery" && (quoting || quoteErrors.length > 0 || activeFarms.some((f: any) => quotes[String(f?.farmerId || "")]?.status !== "ok")));
 
   // ======================================================
   // PLACE ORDER
@@ -446,6 +589,22 @@ export default function Checkout() {
         return Alert.alert(
           "Error",
           "No delivery address selected."
+        );
+      }
+
+      if (delivery === "delivery" && quoting) {
+        return Alert.alert(
+          "Calculating delivery",
+          "Please wait while delivery fees are calculated."
+        );
+      }
+
+      if (delivery === "delivery" && quoteErrors.length > 0) {
+        return Alert.alert(
+          "Delivery unavailable",
+          quoteErrors.map(({ farm, quote }: any) =>
+            `${farm?.farmName || "A farm"}: ${quote?.status === "error" ? quote.message : "unavailable"}`
+          ).join("\n")
         );
       }
 
@@ -527,8 +686,21 @@ export default function Checkout() {
           const farmDeliveryFee =
             delivery ===
             "delivery"
-              ? 35
+              ? feeForFarm(farm?.farmerId)
               : 0;
+
+          const farmDistanceKm =
+            delivery === "delivery" ? kmForFarm(farm?.farmerId) : 0;
+
+          const farmTier =
+            delivery === "delivery"
+              ? (quotes[String(farm?.farmerId || "")] as any)?.tier ?? null
+              : null;
+
+          const farmQuote =
+            delivery === "delivery"
+              ? (quotes[String(farm?.farmerId || "")] as any)
+              : null;
 
           const farmOrderTotal =
             farmTotal +
@@ -536,7 +708,16 @@ export default function Checkout() {
 
           const products =
             farm.products.map(
-              (p: any) => ({
+              (p: any) => {
+                // Egg variant (half/full tray) — price/quantity/unit ay
+                // variant terms; baseQuantity ang base-unit equivalent
+                // para sa stock deduction sa backend (recomputed dito,
+                // hindi pinagkakatiwalaan ang naka-store sa cart).
+                const eggV = normalizeEggVariant(p.eggVariant);
+                const baseU = p.baseUnit || p.unit || "";
+                const qty = Number(p.quantity || 0);
+
+                return {
                 productId:
                   String(
                     p.productId ||
@@ -571,18 +752,27 @@ export default function Checkout() {
                   ),
 
                 quantity:
-                  Number(
-                    p.quantity ||
-                    0
-                  ),
+                  qty,
 
                 unit:
                   p.unit ||
                   "",
 
+                eggVariant:
+                  eggV,
+
+                baseUnit:
+                  baseU,
+
+                baseQuantity:
+                  eggV
+                    ? eggVariantToBaseQuantity(eggV, qty, baseU)
+                    : qty,
+
                 reviewed:
                   false,
-              })
+                };
+              }
             );
 
           const orderResult =
@@ -637,6 +827,16 @@ export default function Checkout() {
 
               deliveryFee:
                 farmDeliveryFee,
+
+              distanceKm: farmDistanceKm ?? null,
+              adjustedDistanceKm: (farmQuote as any)?.adjustedDistanceKm ?? null,
+              deliveryTier: farmTier ?? null,
+              // Quoted preview (the server recomputes the authoritative fee
+              // in POST /orders and again at accept/pay — ignored here).
+              feeStatus: "ok" as any,
+              roadFactor: null,
+              tierVersion: null,
+              deliveryMethod: farmQuote?.method ?? (delivery === "delivery" ? "barangay-road-factor" : null),
 
               total:
                 farmOrderTotal,
@@ -899,6 +1099,44 @@ export default function Checkout() {
                   }
                 </Text>
 
+                {delivery === "delivery" &&
+                  (() => {
+                    const q: any = quotes[String(farm?.farmerId || "")];
+                    if (!q || q.status === "loading" || q.status === "idle") {
+                      return (
+                        <View className="mb-3 flex-row items-center rounded-[5px] bg-gray-50 p-2.5">
+                          <ActivityIndicator size="small" color="#14532d" />
+                          <Text className="ml-2 text-xs text-gray-500">
+                            Calculating delivery fee…
+                          </Text>
+                        </View>
+                      );
+                    }
+                    if (q.status === "error") {
+                      return (
+                        <View className="mb-3 rounded-[5px] border border-red-200 bg-red-50 p-2.5">
+                          <Text className="text-xs font-bold text-red-700">
+                            Delivery unavailable
+                          </Text>
+                          <Text className="mt-0.5 text-xs text-red-600">
+                            {deliveryErrorMessage(q.code, q.message)}
+                          </Text>
+                        </View>
+                      );
+                    }
+                    return (
+                      <View className="mb-3 flex-row items-center justify-between rounded-[5px] bg-green-50 p-2.5">
+                        <Text className="text-xs text-gray-600">
+                          Delivery · {formatKm(q.distanceKm)}
+                          {q.tier ? ` (${q.tier})` : ""}
+                        </Text>
+                        <Text className="text-sm font-bold text-gray-800">
+                          ₱{Number(q.deliveryFee || 0).toFixed(2)}
+                        </Text>
+                      </View>
+                    );
+                  })()}
+
                 {farm.products.map(
                   (
                     p: any,
@@ -947,6 +1185,12 @@ export default function Checkout() {
                           {
                             p.quantity
                           }
+                          {p.unit ? ` ${String(p.unit).replace(/^per\s+/i, "")}` : ""}
+                          {normalizeEggVariant(p.eggVariant) === "half"
+                            ? " (15 pcs)"
+                            : normalizeEggVariant(p.eggVariant) === "full"
+                              ? " (30 pcs)"
+                              : ""}
                         </Text>
                       </View>
 
@@ -1030,7 +1274,7 @@ export default function Checkout() {
             }`}
           >
             <Text className="font-semibold text-sm text-gray-800">
-              Delivery (+₱35)
+              Delivery (by distance)
             </Text>
 
             <Ionicons
@@ -1259,9 +1503,32 @@ export default function Checkout() {
               </Text>
             </View>
 
+              {delivery === "delivery" &&
+              activeFarms.map((farm: any) => {
+                const q: any = quotes[String(farm?.farmerId || "")];
+                const label =
+                  q?.status === "ok"
+                    ? `Delivery · ${farm?.farmName} (${formatKm(q.distanceKm)})`
+                    : `Delivery · ${farm?.farmName}`;
+                const value =
+                  q?.status === "ok"
+                    ? `₱${Number(q.deliveryFee || 0).toFixed(2)}`
+                    : q?.status === "loading"
+                      ? "…"
+                      : "unavailable";
+                return (
+                  <View key={`fee-${farm?.farmerId}`} className="flex-row justify-between mb-1.5">
+                    <Text className="text-gray-600 text-xs flex-1 mr-2" numberOfLines={1}>
+                      {label}
+                    </Text>
+                    <Text className="text-gray-800 text-xs">{value}</Text>
+                  </View>
+                );
+              })}
+
             <View className="flex-row justify-between mb-3">
               <Text className="text-gray-600 text-sm">
-                Delivery Fee
+                Delivery Fee total
               </Text>
 
               <Text className="text-gray-800 text-sm">
@@ -1271,6 +1538,27 @@ export default function Checkout() {
                 )}
               </Text>
             </View>
+
+            {delivery === "delivery" && (quoting || quoteErrors.length > 0) && (
+              <View className="mb-3 rounded-[5px] border border-amber-200 bg-amber-50 p-3">
+                <Text className="text-xs font-bold text-amber-900">
+                  {quoting ? "Calculating delivery fees…" : "Some farms can't be delivered to."}
+                </Text>
+                {quoteErrors.map(({ farm, quote }: any) => (
+                  <Text key={`err-${farm?.farmerId}`} className="mt-1 text-xs text-amber-800">
+                    {farm?.farmName}: {deliveryErrorMessage((quote as any)?.code, (quote as any)?.message)}
+                  </Text>
+                ))}
+                {!quoting && (
+                  <TouchableOpacity
+                    onPress={() => setQuoteAttempt((n) => n + 1)}
+                    className="mt-2 rounded-[5px] bg-amber-700 py-2 items-center"
+                  >
+                    <Text className="text-white text-xs font-bold">Try again</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+            )}
 
             <View className="h-px bg-green-100 mb-3" />
 
@@ -1298,24 +1586,30 @@ export default function Checkout() {
             placeOrder
           }
           disabled={
-            loading
+            placeOrderBlocked
           }
           className={`bg-green-900 py-4 rounded-[5px] items-center justify-center ${
-            loading
-              ? "opacity-70"
-              : ""
+            placeOrderBlocked
+              ? "opacity-50"
+              : loading
+                ? "opacity-70"
+                : ""
           }`}
         >
-          {loading ? (
+          {loading || quoting ? (
             <View className="flex-row items-center">
               <ActivityIndicator
                 color="#fff"
               />
 
               <Text className="text-white font-bold ml-2">
-                Processing...
+                {quoting ? "Calculating delivery…" : "Processing..."}
               </Text>
             </View>
+          ) : quoteErrors.length > 0 && delivery === "delivery" ? (
+            <Text className="text-white text-center font-bold">
+              Delivery unavailable
+            </Text>
           ) : (
             <Text className="text-white text-center font-bold">
               {payment ===
@@ -1325,6 +1619,14 @@ export default function Checkout() {
             </Text>
           )}
         </TouchableOpacity>
+        {delivery === "delivery" && quoteErrors.length > 0 && !quoting && (
+          <TouchableOpacity
+            onPress={() => setQuoteAttempt((n) => n + 1)}
+            className="mt-2 py-2 items-center"
+          >
+            <Text className="text-green-900 text-sm font-bold">Try again</Text>
+          </TouchableOpacity>
+        )}
       </View>
     </View>
   );

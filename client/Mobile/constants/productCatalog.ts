@@ -157,11 +157,192 @@ export const getUnitsForProduct = (
   category: ProductCategoryKey,
   _productName?: string
 ): string[] => {
-  // Egg & Poultry — walang "per kg", tray units lang para sa
-  // egg at poultry (half tray / per tray).
+  // Egg & Poultry — fixed na "per tray" ang basehan ng farmer sa
+  // bagong listing (si buyer na ang pipili ng half o full tray,
+  // kaya hindi na kailangang mamili pa si farmer). Nasa unahan ang
+  // "per tray" dahil ito ang default ([0]) sa Add Harvest.
   if (category === "Egg & Poultry") {
-    return ["half tray", "per tray"];
+    return ["per tray", "half tray"];
   }
 
   return ["per kg"];
+};
+
+// ============================================================
+// EGG VARIANTS (half tray / full tray)
+// ============================================================
+//
+// Ang farmer ay naglilista gamit ang ISA lang na unit (half tray O
+// per tray). Sa buyer side, laging may pagpipilian na BOTH:
+//   - Half Tray = 15 pcs
+//   - Full Tray (per tray) = 30 pcs
+//
+// Ang presyo ay auto-compute mula sa base price ng farmer:
+//   - base "per tray" P300 -> half P150, full P300
+//   - base "half tray" P150 -> half P150, full P300
+//
+// Ang stock deduction ay laging naka-convert sa BASE unit
+// (half = 0.5 tray, full = 2 half-trays) para hindi masira ang
+// inventory kahit magkahalo ang binili ng buyer.
+
+export type EggVariant = "half" | "full";
+
+export const EGG_HALF_PCS = 15;
+export const EGG_FULL_PCS = 30;
+
+export const HALF_TRAY_UNIT = "half tray";
+export const FULL_TRAY_UNIT = "per tray";
+
+const roundMoney2 = (value: number): number => {
+  if (!Number.isFinite(value)) return 0;
+  return Math.round((value + Number.EPSILON) * 100) / 100;
+};
+
+const roundStock6 = (value: number): number =>
+  Number(Number(value).toFixed(6));
+
+const normalizeUnit = (unit: string): string =>
+  String(unit || "").trim().toLowerCase().replace(/\s+/g, " ");
+
+export const isHalfTrayUnit = (unit: string): boolean =>
+  normalizeUnit(unit) === "half tray";
+
+export const isFullTrayUnit = (unit: string): boolean => {
+  const u = normalizeUnit(unit);
+  return u === "per tray" || u === "tray" || u === "full tray";
+};
+
+export const isTrayUnit = (unit: string): boolean =>
+  isHalfTrayUnit(unit) || isFullTrayUnit(unit);
+
+export const normalizeEggVariant = (value: unknown): EggVariant | null => {
+  const v = String(value ?? "").trim().toLowerCase();
+  if (v === "half" || v === "half tray" || v === "half-tray") return "half";
+  if (
+    v === "full" ||
+    v === "per tray" ||
+    v === "full tray" ||
+    v === "tray"
+  )
+    return "full";
+  return null;
+};
+
+export type EggVariantOption = {
+  variant: EggVariant;
+  unit: string;
+  price: number;
+  pcs: number;
+  label: string;
+};
+
+export const getEggVariantOptions = (
+  baseUnit: string,
+  basePrice: number
+): EggVariantOption[] => {
+  if (!isTrayUnit(baseUnit)) return [];
+  if (!Number.isFinite(basePrice) || basePrice < 0) return [];
+
+  const halfBase = isHalfTrayUnit(baseUnit);
+
+  return [
+    {
+      variant: "half",
+      unit: HALF_TRAY_UNIT,
+      price: halfBase ? roundMoney2(basePrice) : roundMoney2(basePrice / 2),
+      pcs: EGG_HALF_PCS,
+      label: "Half Tray (15 pcs)",
+    },
+    {
+      variant: "full",
+      unit: FULL_TRAY_UNIT,
+      price: halfBase ? roundMoney2(basePrice * 2) : roundMoney2(basePrice),
+      pcs: EGG_FULL_PCS,
+      label: "Full Tray (30 pcs)",
+    },
+  ];
+};
+
+// Variant quantity -> base-unit quantity (para sa stock deduction).
+// Ex. base "per tray", bumili ng 2 half -> 1. Base "half tray",
+// bumili ng 1 full -> 2.
+export const eggVariantToBaseQuantity = (
+  variant: EggVariant | string | null | undefined,
+  variantQty: number,
+  baseUnit: string
+): number => {
+  const v = normalizeEggVariant(variant);
+  const qty = Number(variantQty);
+  if (!v || !Number.isFinite(qty)) return Number(variantQty) || 0;
+  if (v === "half" && isFullTrayUnit(baseUnit)) return roundStock6(qty / 2);
+  if (v === "full" && isHalfTrayUnit(baseUnit)) return roundStock6(qty * 2);
+  return qty;
+};
+
+// Base stock -> mabibiling dami sa napiling variant (para sa limit
+// ng quantity stepper). Ex. 10 trays -> 20 half trays. 9 half trays
+// -> 4 full trays (floor, hindi pwedeng magbenta ng kulang na tray).
+export const baseStockToVariantStock = (
+  baseStock: number,
+  baseUnit: string,
+  variant: EggVariant | string | null | undefined
+): number => {
+  const v = normalizeEggVariant(variant);
+  const stock = Number(baseStock);
+  if (!Number.isFinite(stock) || stock <= 0) return 0;
+  if (!v) return stock;
+  if (v === "half" && isFullTrayUnit(baseUnit)) return Math.floor(stock * 2);
+  if (v === "full" && isHalfTrayUnit(baseUnit))
+    return Math.floor(stock / 2);
+  return Math.floor(stock);
+};
+
+// Buyer-facing stock text sa trays, kasama ang half handling.
+// Ex. 20 -> "20 trays left"; 18.5 -> "18 and a half trays left";
+// 0.5 -> "Half tray left"; half-base 50 -> "50 half trays left".
+export const formatTrayStock = (
+  baseStock: number,
+  baseUnit: string
+): string => {
+  const stock = Number(baseStock);
+  if (!Number.isFinite(stock) || stock <= 0) return "Out of stock";
+
+  if (isHalfTrayUnit(baseUnit)) {
+    const n = Math.floor(stock);
+    return n === 1 ? "1 half tray left" : `${n} half trays left`;
+  }
+
+  if (isFullTrayUnit(baseUnit)) {
+    const full = Math.floor(stock);
+    const hasHalf = stock - full >= 0.5;
+    if (full === 0 && hasHalf) return "Half tray left";
+    if (full === 1 && !hasHalf) return "1 tray left";
+    if (!hasHalf) return `${full} trays left`;
+    return `${full} and a half trays left`;
+  }
+
+  return `${stock} ${String(baseUnit || "").trim()} left`;
+};
+
+export const eggVariantLabel = (
+  variant: EggVariant | string | null | undefined
+): string => {
+  const v = normalizeEggVariant(variant);
+  if (v === "half") return "Half Tray (15 pcs)";
+  if (v === "full") return "Full Tray (30 pcs)";
+  return "";
+};
+
+// Base stock -> kabuuang piraso ng itlog (iisang numero lang para hindi
+// malito ang buyer — hindi na half-count at full-count na magkaiba).
+// Ex. 50 half trays = 750 pcs; 25 full trays = 750 pcs.
+export const baseStockToPcs = (
+  baseStock: number,
+  baseUnit: string
+): number => {
+  const stock = Number(baseStock);
+  if (!Number.isFinite(stock) || stock <= 0) return 0;
+  if (isHalfTrayUnit(baseUnit)) return Math.floor(stock * EGG_HALF_PCS);
+  if (isFullTrayUnit(baseUnit)) return Math.floor(stock * EGG_FULL_PCS);
+  return Math.floor(stock);
 };
