@@ -1,11 +1,10 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+// Admin wallet page.
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { FaWallet } from "react-icons/fa";
 import { IoIosArrowBack, IoIosArrowForward } from "react-icons/io";
 import { FiClock, FiSmartphone, FiX } from "react-icons/fi";
 import {
-  getAdminPayoutAccount,
-  getAdminTransactions,
-  getAdminWallet,
+  getAdminWalletOverview,
   requestAdminWithdrawal,
   saveAdminPayoutAccount,
 } from "../services/walletService";
@@ -54,7 +53,7 @@ const formatPeso = (v) =>
 const formatDateTime = (ts) => {
   if (!ts) return "—";
   try {
-    // JSON gives {_seconds}, not a Date object.
+    // Handle Firestore timestamp formats.
     let d;
     if (ts.toDate) d = ts.toDate();
     else if (typeof ts._seconds === "number") d = new Date(ts._seconds * 1000);
@@ -91,35 +90,54 @@ const Wallet = () => {
   const [amount, setAmount] = useState("");
   const [showPayoutModal, setShowPayoutModal] = useState(false);
 
+  const hasLoadedRef = useRef(false);
+  const loadingRef = useRef(false);
+  const lastReloadRef = useRef(0);
+
   const load = useCallback(async () => {
+    // Debounce: ignore overlapping calls and refocus storms (<2s apart).
+    if (loadingRef.current) return;
+    if (Date.now() - lastReloadRef.current < 2000) return;
+    loadingRef.current = true;
+    lastReloadRef.current = Date.now();
+
+    const isFirstLoad = !hasLoadedRef.current;
     try {
-      setLoading(true);
+      if (isFirstLoad) setLoading(true);
       setError(null);
-      const [w, txs, pa] = await Promise.all([
-        getAdminWallet(),
-        getAdminTransactions(),
-        getAdminPayoutAccount(),
-      ]);
-      setWallet(w.wallet);
-      setWithdrawable(w.withdrawableAmount);
-      setMinimumWithdrawal(w.minimumWithdrawal);
-      setTransactions(txs);
-      setPayout(pa);
-      if (pa) {
+      // Single roundtrip: wallet + payout + history (1 auth on server).
+      const overview = await getAdminWalletOverview();
+      setWallet(overview.wallet);
+      setWithdrawable(overview.withdrawableAmount);
+      setMinimumWithdrawal(overview.minimumWithdrawal);
+      setTransactions(overview.transactions);
+      setPayout(overview.payoutAccount);
+      if (overview.payoutAccount) {
         setForm({
-          accountName: pa.accountName || "",
+          accountName: overview.payoutAccount.accountName || "",
           accountNumber: "",
         });
       }
+      hasLoadedRef.current = true;
     } catch {
       setError("Could not load the wallet. Please try again.");
     } finally {
-      setLoading(false);
+      loadingRef.current = false;
+      if (isFirstLoad) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
     load();
+  }, [load]);
+
+  // Silent refresh on tab refocus (no spinner after first load).
+  useEffect(() => {
+    const handleFocus = () => {
+      load();
+    };
+    window.addEventListener("focus", handleFocus);
+    return () => window.removeEventListener("focus", handleFocus);
   }, [load]);
 
   const openPayoutModal = () => {
@@ -132,6 +150,7 @@ const Wallet = () => {
 
   const handleSavePayout = async (e) => {
     e?.preventDefault?.();
+    // Clean and validate GCash inputs.
     const cleanName = String(form.accountName || "").trim().slice(0, 100);
     const rawNumber = String(form.accountNumber || "").replace(/\D/g, "").slice(0, 11);
 
@@ -139,7 +158,7 @@ const Wallet = () => {
       toastError("Required", "Enter the GCash account name.");
       return;
     }
-    // Empty number means keep the saved one.
+    // Blank keeps saved number.
     if (rawNumber !== "" && !/^09\d{9}$/.test(rawNumber)) {
       toastError(
         "Invalid GCash",
@@ -176,6 +195,7 @@ const Wallet = () => {
   const handleWithdraw = async (e) => {
     e.preventDefault();
     if (withdrawing) return;
+    // Validate withdrawal amount text.
     const text = String(amount || "").trim().slice(0, 12);
     let parsed;
     if (text === "") {
@@ -240,12 +260,13 @@ const Wallet = () => {
     1,
     Math.ceil(visibleTransactions.length / ITEMS_PER_PAGE)
   );
+  // Clamp page within valid range.
   const safePage = Math.min(Math.max(currentPage, 1), totalPages);
   const paginatedTransactions = visibleTransactions.slice(
     (safePage - 1) * ITEMS_PER_PAGE,
     safePage * ITEMS_PER_PAGE
   );
-  // Fill short pages so the table height stays steady.
+  // Pad short pages evenly.
   const displayTransactions = useMemo(() => {
     const list = [...paginatedTransactions];
     while (list.length < ITEMS_PER_PAGE) list.push(null);
@@ -258,6 +279,7 @@ const Wallet = () => {
     setCurrentPage(1);
   }, [transactions.length]);
 
+  // Pick first available reference id.
   const getReference = (t) =>
     t.reference || t.withdrawalId || t.orderNumber || t.orderId || t.id;
   const getTypeLabel = (t) => {
@@ -276,6 +298,7 @@ const Wallet = () => {
 
   return (
     <>
+      {/* Page banner */}
       <div
         className="rounded-[10px] p-[18px] sm:p-6 lg:p-8 mb-5 sm:mb-6 lg:mb-8 flex flex-row items-center justify-between gap-3"
         style={{ backgroundColor: "#14532d" }}
@@ -296,6 +319,7 @@ const Wallet = () => {
         </div>
       </div>
 
+      {/* Balance and payout */}
       <div className="flex flex-col lg:flex-row gap-4 sm:gap-5">
         <div
           className="flex-1 min-w-0 rounded-[10px] shadow-sm p-6 sm:p-8 flex flex-col justify-center"
@@ -407,6 +431,7 @@ const Wallet = () => {
         </div>
       </div>
 
+      {/* Transaction history */}
       <div className="bg-white rounded-[10px] shadow-sm border border-gray-100 p-4 sm:p-5 lg:p-6 mt-4 sm:mt-5 min-w-0">
         <h2 className="text-[11px] font-semibold tracking-[1.5px] text-gray-500 uppercase mb-4">
           Recent transactions
@@ -570,6 +595,7 @@ const Wallet = () => {
         )}
       </div>
 
+      {/* Payout modal */}
       {showPayoutModal && (
         <div
           onClick={() => !saving && setShowPayoutModal(false)}

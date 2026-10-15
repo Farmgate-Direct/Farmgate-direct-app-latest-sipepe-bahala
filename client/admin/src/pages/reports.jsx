@@ -1,3 +1,4 @@
+// Show sales and platform reports.
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { GoPackage } from "react-icons/go";
 import { FaUsers } from "react-icons/fa";
@@ -32,18 +33,30 @@ const getYearOptions = () => {
 const YEAR_OPTIONS = getYearOptions();
 
 const roundMoneyValue = (value) => Math.round(value * 100) / 100;
+// Group daily data into weeks.
+// Gross/earnings here are subtotal-based only (delivery fee excluded).
 const buildWeeks = (days) => {
   const weeks = [];
   for (let i = 0; i < days.length; i += 7) {
     const slice = days.slice(i, i + 7);
     const gross = roundMoneyValue(
-      slice.reduce((s, d) => s + d.gross, 0),
+      slice.reduce((s, d) => s + (Number(d.gross) || 0), 0),
+    );
+    const earnings = roundMoneyValue(
+      slice.reduce(
+        (s, d) =>
+          s +
+          (Number.isFinite(Number(d.earnings))
+            ? Number(d.earnings)
+            : roundMoneyValue((Number(d.gross) || 0) * 0.03)),
+        0,
+      ),
     );
     weeks.push({
       label: `Week ${weeks.length + 1}`,
       range: `${slice[0].label} – ${slice[slice.length - 1].label}`,
       gross,
-      earnings: roundMoneyValue(gross * 0.03),
+      earnings,
       orders: slice.reduce((s, d) => s + d.orders, 0),
       days: slice,
     });
@@ -60,6 +73,7 @@ const CATEGORY_COLORS = [
 
 const CATEGORY_COLORS_HEX = ["#14532d", "#eab308", "#3b82f6", "#a855f7"];
 
+// Build donut chart gradient stops.
 const buildDonutGradient = (categories) => {
   if (!categories || categories.length === 0) return "#f3f4f6";
   let currentDeg = 0;
@@ -73,6 +87,7 @@ const buildDonutGradient = (categories) => {
   return `conic-gradient(${segments.join(", ")})`;
 };
 
+// Format peso in short form.
 const formatPeso = (amount) => {
   const value = Number(amount) || 0;
   if (value >= 1000000) return `₱${(value / 1000000).toFixed(1)}M`;
@@ -244,6 +259,7 @@ const ReportAnalytics = () => {
       })),
     [yearRevenue],
   );
+  // Switch chart data by drill level.
   const monthlyPerformance = useMemo(() => {
     if (selectedMonth === null) return yearMonths;
     if (selectedWeek === null) return monthWeeks;
@@ -267,6 +283,7 @@ const ReportAnalytics = () => {
   const [topFarmers, setTopFarmers] = useState([]);
   const [topProducts, setTopProducts] = useState([]);
 
+  // Sum total sales across categories.
   const categoryTotal = salesByCategory.reduce(
     (sum, cat) => sum + (cat.amount || 0),
     0,
@@ -285,6 +302,7 @@ const ReportAnalytics = () => {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
+  // Set year range for queries.
   const activeRange = useMemo(() => {
     const y = Number(yearKey);
     return {
@@ -294,6 +312,7 @@ const ReportAnalytics = () => {
   }, [yearKey]);
 
   useEffect(() => {
+    // Fetch all report data together.
     const loadReportData = async () => {
       try {
         setLoading(true);
@@ -350,6 +369,7 @@ const ReportAnalytics = () => {
 
   return (
     <>
+      {/* Page header */}
       <div className="mb-5 sm:mb-6 lg:mb-8 rounded-[10px] p-[18px] sm:p-6 lg:p-8 bg-[#14532d] flex justify-between items-center gap-4">
         <div className="min-w-0">
           <p className="text-[10px] font-bold tracking-[0.2em] text-[#bbf7d0] uppercase">
@@ -383,6 +403,7 @@ const ReportAnalytics = () => {
         </div>
       )}
       <div className="flex flex-col gap-4 sm:gap-5 min-w-0">
+        {/* Stat cards */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4 lg:gap-5 min-w-0">
           {loading
             ? Array.from({ length: 4 }).map((_, i) => (
@@ -462,6 +483,7 @@ const ReportAnalytics = () => {
                 </div>
               ))}
         </div>
+        {/* Performance chart */}
         <div className="bg-white rounded-[10px] shadow-sm border border-gray-100 p-4 sm:p-5 lg:p-6 min-w-0">
           <div className="flex flex-col md:flex-row md:items-center gap-3 mb-4 sm:mb-6">
             <div className="flex items-center gap-2">
@@ -585,6 +607,7 @@ const ReportAnalytics = () => {
             </>
           )}
         </div>
+        {/* Category and products */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-5 min-w-0">
           <div className="bg-white rounded-[10px] shadow-sm border border-gray-100 p-4 sm:p-5 lg:p-6 flex flex-col min-w-0">
             <div className="flex items-start justify-between gap-3 mb-4">
@@ -738,6 +761,7 @@ const ReportAnalytics = () => {
           </div>
         </div>
         </div>
+        {/* Top farmers */}
         <div className="bg-white rounded-[10px] shadow-sm border border-gray-100 p-4 sm:p-5 lg:p-6 min-w-0">
           <h2 className="text-[11px] font-semibold tracking-[1.5px] text-gray-500 uppercase mb-4 sm:mb-6">
             Top Performing Farmers

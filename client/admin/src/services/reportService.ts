@@ -1,3 +1,4 @@
+// Sales report data actions.
 import {
   collection,
   getDocs,
@@ -46,6 +47,38 @@ const inReportRange = (date: Date | null, range: ReportRange): boolean => {
 const roundMoney = (value: number) =>
   Math.round(value * 100) / 100;
 
+const numOrNull = (value: any): number | null => {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+};
+
+// Subtotal ONLY (delivery fee excluded) — e.g. ₱250 x 0.03 = ₱7.50.
+// Prefer backend-written commissionAmount/subTotal, fall back to
+// products sum or total-minus-deliveryFee for old orders.
+const getOrderSubtotal = (data: any): number => {
+  const saved =
+    numOrNull(data?.subTotal) ?? numOrNull(data?.subtotal) ?? null;
+  if (saved !== null && saved >= 0) return saved;
+  const items = Array.isArray(data?.products) ? data.products : [];
+  if (items.length > 0) {
+    const sum = items.reduce(
+      (s: number, item: any) =>
+        s + Number(item?.price || 0) * Number(item?.quantity || 0),
+      0,
+    );
+    if (Number.isFinite(sum) && sum >= 0) return roundMoney(sum);
+  }
+  const total = Number(data?.total) || 0;
+  const fee = Number(data?.deliveryFee) || 0;
+  return Math.max(0, roundMoney(total - fee));
+};
+
+const getOrderCommission = (data: any): number => {
+  const saved = numOrNull(data?.commissionAmount);
+  if (saved !== null && saved >= 0) return saved;
+  return roundMoney(getOrderSubtotal(data) * PLATFORM_COMMISSION_RATE);
+};
+
 export const getReportStats = async (range: ReportRange = ALL_TIME_RANGE) => {
   try {
     const completedOrdersSnap = await getDocs(
@@ -59,8 +92,8 @@ export const getReportStats = async (range: ReportRange = ALL_TIME_RANGE) => {
       const data = doc.data();
       if (!inReportRange(toDateSafe(data.createdAt), range)) return;
       totalOrders += 1;
-      gross += data.total || 0;
-      earnings += roundMoney((data.total || 0) * PLATFORM_COMMISSION_RATE);
+      gross += getOrderSubtotal(data);
+      earnings += getOrderCommission(data);
       const buyerKey = data.buyerId || data.buyerName;
       if (buyerKey) orderingCustomers.add(String(buyerKey));
     });
@@ -115,21 +148,24 @@ export const getYearRevenue = async (year: number) => {
       const date = toDateSafe(data.createdAt);
       if (!date || date.getFullYear() !== safeYear) return;
       const entry = months[date.getMonth()];
-      const total = data.total || 0;
-      entry.gross = roundMoney(entry.gross + total);
+      const subtotal = getOrderSubtotal(data);
+      const commission = getOrderCommission(data);
+      entry.gross = roundMoney(entry.gross + subtotal);
+      entry.earnings = roundMoney((entry.earnings || 0) + commission);
       entry.orders += 1;
       const day = entry.days[date.getDate() - 1];
       if (day) {
-        day.gross = roundMoney(day.gross + total);
+        day.gross = roundMoney(day.gross + subtotal);
+        day.earnings = roundMoney((day.earnings || 0) + commission);
         day.orders += 1;
       }
     });
     months.forEach((entry) => {
       entry.gross = roundMoney(entry.gross);
-      entry.earnings = roundMoney(entry.gross * PLATFORM_COMMISSION_RATE);
+      entry.earnings = roundMoney(entry.earnings || 0);
       entry.days.forEach((day) => {
         day.gross = roundMoney(day.gross);
-        day.earnings = roundMoney(day.gross * PLATFORM_COMMISSION_RATE);
+        day.earnings = roundMoney(day.earnings || 0);
       });
     });
     return months;
@@ -222,7 +258,9 @@ export const getTopFarmers = async (
       if (!salesMap[farmerId]) {
         salesMap[farmerId] = { sales: 0, orders: 0, products: {} };
       }
-      salesMap[farmerId].sales += data.total || 0;
+      salesMap[farmerId].sales = roundMoney(
+        salesMap[farmerId].sales + getOrderSubtotal(data),
+      );
       salesMap[farmerId].orders += 1;
       const items = data.products || [];
       items.forEach((item: any) => {
@@ -565,7 +603,6 @@ export const exportReportToPDF = ({
     });
     const finalY = (doc as any).lastAutoTable.finalY;
 
-    // Footer stays at the bottom of the page.
     const footerLineY = pageHeight - 30;
     const footerTextY = pageHeight - 19;
     doc.setDrawColor(21, 128, 61);
@@ -607,7 +644,6 @@ export const exportReportToPDF = ({
     trimmedNote = `Showing recent ${sliced.length} of ${monthlyFull.length} months to fit one page`;
   }
 
-  // Stretch content to fill one page.
   let cur = best;
   let curPad = bestCfg.pad;
   let curGap = bestCfg.gap;

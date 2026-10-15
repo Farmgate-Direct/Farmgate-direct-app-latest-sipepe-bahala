@@ -1,8 +1,8 @@
+// Admin wallet actions.
 import { auth } from "../FirebaseConfig";
 
 const BACKEND_URL = (import.meta.env.VITE_BACKEND_URL || "").replace(/\/+$/, "");
 
-// Normal read timeout. Withdraw uses longer timeout below.
 const REQUEST_TIMEOUT = 30000;
 const WITHDRAW_TIMEOUT = 60000;
 
@@ -37,40 +37,68 @@ const checkAmount = (amount: number | undefined) => {
   return Math.round(amount * 100) / 100;
 };
 
-const authedFetch = async (path: string, options: RequestInit = {}, timeout = REQUEST_TIMEOUT) => {
+const authedFetch = async (
+  path: string,
+  options: RequestInit = {},
+  timeout = REQUEST_TIMEOUT,
+  retryOnTimeout = true,
+) => {
   if (!BACKEND_URL) throw new Error("VITE_BACKEND_URL is not configured.");
   const user = auth.currentUser;
   if (!user) throw new Error("Not signed in.");
+  // Token is fetched once per overview call (single roundtrip).
   const token = await user.getIdToken();
 
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), timeout);
-  try {
-    const res = await fetch(`${BACKEND_URL}/wallet${path}`, {
-      ...options,
-      signal: ctrl.signal,
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
-        ...(options.headers || {}),
-      },
-    });
+  const attempt = async () => {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeout);
+    try {
+      const res = await fetch(`${BACKEND_URL}/wallet${path}`, {
+        ...options,
+        signal: ctrl.signal,
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+          ...(options.headers || {}),
+        },
+      });
 
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok || data.success === false) {
-      throw new Error(data.error || `Request failed (${res.status}).`);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.success === false) {
+        const err: any = new Error(
+          data.error || `Request failed (${res.status}).`,
+        );
+        err.status = res.status;
+        throw err;
+      }
+      return data;
+    } catch (e: any) {
+      if (e?.name === "AbortError") {
+        const err: any = new Error(
+          "The server is waking up (cold start). Please wait a moment.",
+        );
+        err.name = "AbortError";
+        throw err;
+      }
+      throw e;
+    } finally {
+      clearTimeout(timer);
     }
-    return data;
+  };
+
+  try {
+    return await attempt();
   } catch (e: any) {
-    if (e?.name === "AbortError") {
-      throw new Error("Request took too long. Please try again.");
+    // One auto-retry covers the Render cold-start window.
+    if (retryOnTimeout && e?.name === "AbortError") {
+      await new Promise((r) => setTimeout(r, 2000));
+      return await attempt();
     }
     throw e;
-  } finally {
-    clearTimeout(timer);
   }
 };
 
+// Get admin wallet balance.
 export const getAdminWallet = async () => {
   const data = await authedFetch("/admin/wallet");
   return {
@@ -80,22 +108,59 @@ export const getAdminWallet = async () => {
   };
 };
 
+// Get admin wallet transactions.
 export const getAdminTransactions = async () => {
   const data = await authedFetch("/admin/transactions");
-  // Always return a list so the table never breaks.
   return Array.isArray(data.transactions) ? data.transactions : [];
 };
 
+// Get admin payout account.
 export const getAdminPayoutAccount = async () => {
   const data = await authedFetch("/admin/payout-account");
   return data.payoutAccount || null;
+};
+
+// Single roundtrip for the wallet screen (1 auth on server,
+// wallet + payout + history fetched in parallel there).
+// Falls back to the old 3-request flow when the live server
+// hasn't been redeployed yet (404 for /admin/overview).
+export const getAdminWalletOverview = async () => {
+  try {
+    const data = await authedFetch("/admin/overview");
+    return {
+      wallet: data.wallet,
+      payoutAccount: data.payoutAccount || null,
+      transactions: Array.isArray(data.transactions)
+        ? data.transactions
+        : [],
+      withdrawableAmount: Number(data.withdrawableAmount || 0),
+      minimumWithdrawal: Number(data.minimumWithdrawal || 1),
+    };
+  } catch (e: any) {
+    if (e?.status !== 404) throw e;
+
+    console.log(
+      "Admin overview route missing on server, using legacy wallet calls.",
+    );
+    const [w, txs, pa] = await Promise.all([
+      authedFetch("/admin/wallet", {}, REQUEST_TIMEOUT, false),
+      authedFetch("/admin/transactions", {}, REQUEST_TIMEOUT, false),
+      authedFetch("/admin/payout-account", {}, REQUEST_TIMEOUT, false),
+    ]);
+    return {
+      wallet: w.wallet,
+      payoutAccount: pa.payoutAccount || null,
+      transactions: Array.isArray(txs.transactions) ? txs.transactions : [],
+      withdrawableAmount: Number(w.withdrawableAmount || 0),
+      minimumWithdrawal: Number(w.minimumWithdrawal || 1),
+    };
+  }
 };
 
 export const saveAdminPayoutAccount = async (input: {
   accountName: string;
   accountNumber: string;
 }) => {
-  // Only name + number are sent. Other fields stay read-only.
   const accountName = cleanName(input?.accountName);
   checkName(accountName);
   const accountNumber = cleanNumber(input?.accountNumber);
